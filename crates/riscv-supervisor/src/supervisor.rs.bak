@@ -1,0 +1,817 @@
+//! Supervisor-layer CPU: extends base core with M/S modes, CSRs, MMU, interrupts
+
+use riscv_core::{decode::decode, execute::{Bus, Cpu}, types::*};
+use crate::types::*;
+use crate::mmu::Mmu;
+use crate::sbi;
+use crate::types::AccessType;
+
+pub struct Supervisor {
+    pub cpu: Cpu,
+    pub mmu: Mmu,
+    // Privilege & CSRs
+    pub priv_level: Privilege,
+    pub mstatus: MStatus,
+    pub mie: u64,         // interrupt enable
+    pub mip: u64,         // interrupt pending
+    pub mtvec: u64,
+    pub mepc: u64,
+    pub mcause: u64,
+    pub mtval: u64,
+    pub mscratch: u64,
+    pub medeleg: u64,
+    pub mideleg: u64,
+    // S-mode CSRs
+    pub stvec: u64,
+    pub sepc: u64,
+    pub scause: u64,
+    pub stval: u64,
+    pub sscratch: u64,
+    pub satp: Satp,
+    pub stimecmp: u64,
+    // Counter
+    pub mcycle: u64,
+    pub minstret: u64,
+    // Hart ID
+    pub mhartid: u64,
+    // WFI state
+    pub wfi: bool,
+    // Reservation for LR/SC (single-hart, simple)
+    pub reservation_addr: Option<u64>,
+    // Console output buffer (for SBI debug_console writes)
+    pub console_buf: [u8; 4096],
+    pub console_len: usize,
+    pub last_trap_cause: u64,
+    pub last_trap_epc: u64,
+    pub last_ecall_a7: u64,
+    pub last_ecall_a6: u64,
+    pub ecall_count: u64,
+    // Diagnostic: last compressed instruction that failed to decode
+    pub last_decode_fail_raw: u32,
+    pub last_decode_fail_pc: u64,
+    pub last_fetch_paddr: u64,
+    pub last_fetch_half: u16,
+    pub last_fetched_raw: u32,
+}
+
+/// Wrapper that feeds SBI console output into Supervisor's fixed buffer.
+struct ConsoleToBuf<'a>(&'a mut Supervisor);
+
+impl<'a> sbi::HostConsole for ConsoleToBuf<'a> {
+    fn write(&mut self, buf: &[u8]) {
+        let s = &mut self.0;
+        let n = buf.len().min(s.console_buf.len() - s.console_len);
+        if n > 0 {
+            s.console_buf[s.console_len..s.console_len + n].copy_from_slice(&buf[..n]);
+            s.console_len += n;
+        }
+    }
+}
+
+impl Supervisor {
+    pub fn new(pc: u64, hartid: u64) -> Self {
+        let mut cpu = Cpu::new(pc);
+        cpu.x[0] = 0; // x0 hardwired
+        Self {
+            cpu,
+            mmu: Mmu::new(),
+            priv_level: Privilege::Machine,
+            mstatus: MStatus::default(),
+            mie: 0,
+            mip: 0,
+            mtvec: 0,
+            mepc: 0,
+            mcause: 0,
+            mtval: 0,
+            mscratch: 0,
+            medeleg: 0xFFFF, // Delegate common exceptions to S-mode
+            mideleg: 0,
+            stvec: 0,
+            sepc: 0,
+            scause: 0,
+            stval: 0,
+            sscratch: 0,
+            satp: Satp { mode: 0, asid: 0, ppn: 0 },
+            stimecmp: 0,
+            mcycle: 0,
+            minstret: 0,
+            mhartid: hartid,
+            wfi: false,
+            reservation_addr: None,
+            console_buf: [0u8; 4096],
+            console_len: 0,
+            last_trap_cause: 0,
+            last_trap_epc: 0,
+            last_ecall_a7: 0,
+            last_ecall_a6: 0,
+            ecall_count: 0,
+            last_decode_fail_raw: 0,
+            last_decode_fail_pc: 0,
+            last_fetch_paddr: 0,
+            last_fetch_half: 0,
+            last_fetched_raw: 0,
+        }
+    }
+
+    /// Instructions that are simple loads/stores (need address translation in S/U mode)
+    fn is_simple_load_store(instr: &Instr) -> bool {
+        use Instr::*;
+        matches!(instr,
+            Lb{..}|Lh{..}|Lw{..}|Ld{..}|Lbu{..}|Lhu{..}|Lwu{..}|Fld{..}|
+            Sb{..}|Sh{..}|Sw{..}|Sd{..}|Fsd{..}
+        )
+    }
+
+    /// Temporary debug method to expose translation result
+    pub fn debug_translate(&mut self, bus: &mut dyn Bus, access: AccessType, vaddr: u64) -> Result<u64, u64> {
+        match self.translate(bus, access, vaddr) {
+            Ok(paddr) => Ok(paddr),
+            Err(_) => Err(0xDEAD),
+        }
+    }
+
+    /// Temporary debug method to fetch and decode instruction
+    pub fn debug_fetch(&mut self, bus: &mut dyn Bus, vaddr: u64) -> Result<(u64, u16, u8, u32), u64> {
+        match self.translate(bus, AccessType::Instruction, vaddr) {
+            Ok(paddr) => {
+                let half = bus.read_u16(paddr);
+                if (half & 0b11) != 0b11 {
+                    match riscv_core::compressed::decompress(half) {
+                        Some(_) => Ok((paddr, half, 2, 0)),
+                        None => Ok((paddr, half, 0, ((bus.read_u16(paddr + 2) as u32) << 16) | (half as u32))),
+                    }
+                } else {
+                    let hi = bus.read_u16(paddr + 2);
+                    let raw = ((hi as u32) << 16) | (half as u32);
+                    Ok((paddr, half, 4, raw))
+                }
+            }
+            Err(_) => Err(0xDEAD),
+        }
+    }
+
+    /// Single step: fetch, decode, translate, execute
+    pub fn step(&mut self, bus: &mut dyn Bus) -> Status {
+        // 0. Sync timer interrupt from bus (assert only; clear via trap handler or mtimecmp write)
+        if bus.check_timer_interrupt() {
+            self.mip |= 1 << 7;   // MTIP level
+        } else {
+            self.mip &= !(1 << 7);
+        }
+
+        // 0b. Sync S-mode timer interrupt from stimecmp (Sstc extension)
+        if self.stimecmp != 0 && bus.read_mtime() >= self.stimecmp {
+            self.mip |= 1 << 5;   // STIP level
+        } else {
+            self.mip &= !(1 << 5);
+        }
+
+        // 1. Check interrupts before instruction
+        if let Some(trap) = self.check_interrupts() {
+            return self.take_trap(trap);
+        }
+
+        // 2. Fetch instruction (with translation)
+        let paddr = match self.translate(bus, AccessType::Instruction, self.cpu.pc) {
+            Ok(addr) => addr,
+            Err(trap) => return self.take_trap_with_vaddr(trap, Some(self.cpu.pc)),
+        };
+
+        self.last_fetch_paddr = paddr;
+        let half = bus.read_u16(paddr);
+        self.last_fetch_half = half;
+        let (instr, width) = if (half & 0b11) != 0b11 {
+            match riscv_core::compressed::decompress(half) {
+                Some(ins) => {
+                    self.last_fetched_raw = half as u32;
+                    (ins, 2u8)
+                }
+                None => {
+                    let raw = ((bus.read_u16(paddr + 2) as u32) << 16) | (half as u32);
+                    self.last_decode_fail_raw = raw;
+                    self.last_fetched_raw = raw;
+                    self.last_decode_fail_pc = self.cpu.pc;
+                    return self.take_trap(Trap::Exception(Exception::IllegalInstruction));
+                }
+            }
+        } else {
+            let hi = bus.read_u16(paddr + 2);
+            let raw = ((hi as u32) << 16) | (half as u32);
+            self.last_fetched_raw = raw;
+            (decode(raw), 4u8)
+        };
+        // 3. Execute (handle CSRs and privileged ops here)
+        let status = self.execute_supervisor(instr, width, bus);
+
+        self.mcycle = self.mcycle.wrapping_add(1);
+        self.minstret = self.minstret.wrapping_add(1);
+
+        status
+    }
+
+    fn translate(&mut self, bus: &mut dyn Bus, access: AccessType, vaddr: u64) -> Result<u64, Trap> {
+        // M-mode always bypasses MMU for instruction fetches and for data
+        // accesses unless MPRV=1 (in which case MPP determines privilege).
+        if self.priv_level == Privilege::Machine {
+            if access == AccessType::Instruction {
+                return Ok(vaddr);
+            }
+            if !self.mstatus.mprv {
+                return Ok(vaddr);
+            }
+            // MPRV=1 in M-mode: use MPP as effective privilege
+            let eff_priv = self.priv_level_from_mpp();
+            return self.mmu.translate(
+                bus, &self.satp, eff_priv,
+                self.mstatus.sum, self.mstatus.mxr,
+                access, vaddr,
+            );
+        }
+        // S-mode / U-mode always use translation
+        self.mmu.translate(
+            bus, &self.satp, self.priv_level,
+            self.mstatus.sum, self.mstatus.mxr,
+            access, vaddr,
+        )
+    }
+
+    fn priv_level_from_mpp(&self) -> Privilege {
+        match self.mstatus.mpp {
+            0 => Privilege::User,
+            1 => Privilege::Supervisor,
+            3 => Privilege::Machine,
+            _ => Privilege::User, // Invalid, treat as U
+        }
+    }
+
+    /// Execute instruction with supervisor/privileged handling
+    fn execute_supervisor(&mut self, instr: Instr, width: u8, bus: &mut dyn Bus) -> Status {
+        use Instr::*;
+
+        // Handle CSRs
+        match instr {
+            Csrrw { rd, rs1, csr } => return self.csr_op(bus, csr, rd, rs1, self.read_reg(rs1), false, false, width),
+            Csrrs { rd, rs1, csr } => return self.csr_op(bus, csr, rd, rs1, self.read_reg(rs1), true, false, width),
+            Csrrc { rd, rs1, csr } => return self.csr_op(bus, csr, rd, rs1, self.read_reg(rs1), true, true, width),
+            Csrrwi { rd, zimm, csr } => return self.csr_op(bus, csr, rd, zimm, zimm as u64, false, true, width),
+            Csrrsi { rd, zimm, csr } => return self.csr_op(bus, csr, rd, zimm, zimm as u64, true, false, width),
+            Csrrci { rd, zimm, csr } => return self.csr_op(bus, csr, rd, zimm, zimm as u64, true, true, width),
+            Ecall => {
+                if self.priv_level == Privilege::Supervisor {
+                    self.ecall_count += 1;
+                    self.last_ecall_a7 = self.cpu.read_reg(17);
+                    self.last_ecall_a6 = self.cpu.read_reg(16);
+                    let a0 = self.cpu.read_reg(10);
+                    let a1 = self.cpu.read_reg(11);
+                    let a2 = self.cpu.read_reg(12);
+                    let a3 = self.cpu.read_reg(13);
+                    let a4 = self.cpu.read_reg(14);
+                    let a5 = self.cpu.read_reg(15);
+                    let a6 = self.cpu.read_reg(16);
+                    let a7 = self.cpu.read_reg(17);
+                    let mut sink = ConsoleToBuf(self);
+                    let ret = sbi::handle_ecall(bus, a0, a1, a2, a3, a4, a5, a6, a7, &mut sink);
+                    if ret.ext == 0x54494D45 {
+                        self.mie |= 1 << 7; // MTIE
+                    }
+                    self.cpu.write_reg(10, ret.error as u64);
+                    self.cpu.write_reg(11, ret.value as u64);
+                    self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                    return Status::Running;
+                }
+                let cause = match self.priv_level {
+                    Privilege::User => Exception::EnvironmentCallFromU,
+                    Privilege::Supervisor => Exception::EnvironmentCallFromS,
+                    Privilege::Machine => Exception::EnvironmentCallFromM,
+                };
+                return self.take_trap(Trap::Exception(cause));
+            }
+            Ebreak => {
+                // ebreak always causes a Breakpoint exception; let take_trap handle delegation
+                return self.take_trap(Trap::Exception(Exception::Breakpoint));
+            }
+            Mret => return self.do_mret(),
+            Sret => return self.do_sret(),
+            Wfi => {
+                self.wfi = true;
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                return Status::Wfi;
+            }
+            SfenceVma { .. } => {
+                self.mmu.flush_tlb();
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                return Status::Running;
+            }
+            // LR/SC reservation tracking
+            Lrw { rd, rs1, .. } => {
+                let vaddr = (self.read_reg(rs1) as i64) as u64;
+                let paddr = match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(p) => p,
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                };
+                let val = bus.read_u32(paddr) as i32 as u64;
+                self.cpu.write_reg(rd, val);
+                self.reservation_addr = Some(vaddr & !0x3);
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                return Status::Running;
+            }
+            Scw { rd, rs1, rs2, .. } => {
+                let vaddr = (self.read_reg(rs1) as i64) as u64;
+                let paddr = match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(p) => p,
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                };
+                if self.reservation_addr == Some(vaddr & !0x3) {
+                    bus.write_u32(paddr, self.read_reg(rs2) as u32);
+                    self.cpu.write_reg(rd, 0);
+                } else {
+                    self.cpu.write_reg(rd, 1);
+                }
+                self.reservation_addr = None;
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                return Status::Running;
+            }
+            Lrd { rd, rs1, .. } => {
+                let vaddr = self.read_reg(rs1);
+                let paddr = match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(p) => p,
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                };
+                let val = bus.read_u64(paddr);
+                self.cpu.write_reg(rd, val);
+                self.reservation_addr = Some(vaddr & !0x7);
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                return Status::Running;
+            }
+            Scd { rd, rs1, rs2, .. } => {
+                let vaddr = self.read_reg(rs1);
+                let paddr = match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(p) => p,
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                };
+                if self.reservation_addr == Some(vaddr & !0x7) {
+                    bus.write_u64(paddr, self.read_reg(rs2));
+                    self.cpu.write_reg(rd, 0);
+                } else {
+                    self.cpu.write_reg(rd, 1);
+                }
+                self.reservation_addr = None;
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+                return Status::Running;
+            }
+            // Atomics: pass through to base CPU after translation
+            // All other instructions (ALU/branch/jump/load/store) fall through below.
+            _ => {}
+        }
+
+        // Dispatch: CSR/system already handled above.
+        // Memory ops (load/store/atomic) need translation.
+        // ALU/branch/jump don't touch memory.
+        if Self::is_simple_load_store(&instr) {
+            self.execute_translated(instr, width, bus)
+        } else {
+            // Non-memory instruction: ALU, branch, jump, fences, etc.
+            self.cpu.execute_width(instr, width, bus)
+        }
+    }
+
+    fn read_reg(&self, i: u8) -> u64 {
+        self.cpu.read_reg(i)
+    }
+
+    fn csr_op(&mut self, bus: &mut dyn Bus, csr: u16, rd: u8, _rs1: u8, val: u64, read: bool, clear: bool, width: u8) -> Status {
+        // Check CSR access permissions
+        let csr_priv = ((csr >> 8) & 0x3) as u8;
+        let priv_lvl = self.priv_level as u8;
+        if priv_lvl < csr_priv {
+            return self.take_trap(Trap::Exception(Exception::IllegalInstruction));
+        }
+
+        // Check read-only CSRs (rs1 == 0 is read-only for CSRRS/I, rs1 != 0 is write)
+        let _is_read_only = (csr >> 10) & 0x3 == 0b11; // TODO: enforce read-only for CSRRW with rs1!=0
+        // Simplified: assume all CSRRW/I are writes, CSRRS/C are read-modify-write
+
+        let old = self.csr_read(bus, csr);
+        let new = if clear {
+            old & !val          // CSRRC
+        } else if read {
+            old | val            // CSRRS
+        } else {
+            val                   // CSRRW
+        };
+
+        // CSRRW always writes; CSRRS/C only write if rs1 != x0 (val != 0)
+        if !read || val != 0 {
+            self.csr_write(csr, new);
+        }
+
+        self.cpu.write_reg(rd, old);
+        self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+        Status::Running
+    }
+
+    fn csr_read(&mut self, bus: &mut dyn Bus, csr: u16) -> u64 {
+        match csr {
+            // M-mode CSRs
+            0x300 => self.mstatus.to_bits(),
+            0x301 => 0x8000000000941105, // misa: RV64IMAC (no F/D)
+            0x302 => self.medeleg,
+            0x303 => self.mideleg,
+            0x304 => self.mie,
+            0x305 => self.mtvec,
+            0x306 => 0, // mcounteren
+            0x340 => self.mscratch,
+            0x341 => self.mepc,
+            0x342 => self.mcause,
+            0x343 => self.mtval,
+            0x344 => self.mip,
+            0xB00 => self.mcycle,
+            0xB02 => self.minstret,
+            0xF11 => 0, // mvendorid
+            0xF12 => 0, // marchid
+            0xF13 => 0, // mimpid
+            0xF14 => self.mhartid,
+
+            // S-mode CSRs
+            0x100 => self.mstatus.to_bits(),
+            0x104 => self.mie & 0x222, // sie: S-mode view of mie (SSIE/STIE/SEIE)
+            0x105 => self.stvec,
+            0x106 => 0, // scounteren
+            0x140 => self.sscratch,
+            0x141 => self.sepc,
+            0x142 => self.scause,
+            0x143 => self.stval,
+            0x144 => self.mip & 0x222, // sip: S-mode view of mip
+            0x14D => self.stimecmp,
+            0x180 => self.satp.to_bits(),
+
+            // User-visible counter CSRs (read-only aliases of M-mode counters)
+            0xC00 => self.mcycle,       // cycle
+            0xC01 => bus.read_mtime(),  // time
+            0xC02 => self.minstret,     // instret
+            0xC80 => 0,                 // cycleh (RV32 only)
+            0xC81 => 0,                 // timeh (RV32 only)
+            0xC82 => 0,                 // instreth (RV32 only)
+
+            _ => {
+                // Unknown CSR — read as 0 for forward compatibility
+                0
+            }
+        }
+    }
+
+    fn csr_write(&mut self, csr: u16, val: u64) {
+        match csr {
+            0x300 => {
+                self.mstatus.from_bits(val);
+                // UXL/SXL are WARL, hardcode to 64-bit
+                self.mstatus.uxl = 2;
+                self.mstatus.sxl = 2;
+            }
+            0x302 => self.medeleg = val,
+            0x303 => self.mideleg = val,
+            0x304 => self.mie = val,
+            0x305 => self.mtvec = val,
+            0x340 => self.mscratch = val,
+            0x341 => self.mepc = val,
+            0x342 => self.mcause = val,
+            0x343 => self.mtval = val,
+            0x344 => self.mip = val,
+            0xB00 => self.mcycle = val,
+            0xB02 => self.minstret = val,
+            0x100 => self.mstatus.from_bits(val),
+            0x104 => self.mie = (self.mie & !0x222) | (val & 0x222), // sie: only S-mode bits
+            0x105 => self.stvec = val,
+            0x140 => self.sscratch = val,
+            0x141 => self.sepc = val,
+            0x142 => self.scause = val,
+            0x143 => self.stval = val,
+            0x144 => self.mip = (self.mip & !0x222) | (val & 0x222), // sip: only S-mode bits
+            0x14D => { self.stimecmp = val; }
+            0x180 => {
+                let old = self.satp.to_bits();
+                self.satp.from_bits(val);
+                // If ASID changed or mode changed, flush TLB
+                if self.satp.mode != ((old >> 60) & 0xF) as u8 ||
+                   self.satp.asid != ((old >> 44) & 0xFFFF) as u16 {
+                    self.mmu.flush_tlb();
+                }
+            }
+            _ => {} // Ignore unknown CSRs
+        }
+    }
+
+    fn check_interrupts(&self) -> Option<Trap> {
+        if self.wfi {
+            // WFI wakes on any enabled pending interrupt; fall through to check
+        }
+
+        // Per RISC-V priv spec 3.1.9:
+        // - Globally enabled interrupts see individual enable bits (mie/sie)
+        // - Delegated interrupts are suppressed in M-mode and appear in the
+        //   delegated privilege (S/U)
+        let m_enabled = self.priv_level != Privilege::Machine || self.mstatus.mie;
+        let s_enabled = self.priv_level == Privilege::User
+                     || (self.priv_level == Privilege::Supervisor && self.mstatus.sie);
+
+        let pending = self.mip & self.mie;
+        if pending == 0 {
+            return None;
+        }
+
+        // Compute delegated and non-delegated pending bits
+        let delegated = pending & self.mideleg;
+        let m_pending = pending & !self.mideleg; // non-delegated only
+
+        // S-mode delegated interrupts
+        if s_enabled {
+            if delegated != 0 && self.priv_level != Privilege::Machine {
+                if (delegated & (1 << 7)) != 0 {
+                    // Delegated MTIP → SupervisorTimer
+                    return Some(Trap::Interrupt(Interrupt::SupervisorTimer));
+                }
+                if (delegated & (1 << 5)) != 0 { // STIP
+                    return Some(Trap::Interrupt(Interrupt::SupervisorTimer));
+                }
+                if (delegated & (1 << 1)) != 0 { // SSIP
+                    return Some(Trap::Interrupt(Interrupt::SupervisorSoftware));
+                }
+                if (delegated & (1 << 9)) != 0 { // SEIP
+                    return Some(Trap::Interrupt(Interrupt::SupervisorExternal));
+                }
+            }
+        }
+
+        // M-mode interrupts (only non-delegated bits)
+        if m_enabled {
+            if (m_pending & (1 << 7)) != 0 { // MTIP
+                return Some(Trap::Interrupt(Interrupt::MachineTimer));
+            }
+            if (m_pending & (1 << 3)) != 0 { // MSIP
+                return Some(Trap::Interrupt(Interrupt::MachineSoftware));
+            }
+            if (m_pending & (1 << 11)) != 0 { // MEIP
+                return Some(Trap::Interrupt(Interrupt::MachineExternal));
+            }
+        }
+
+        None
+    }
+
+    fn take_trap(&mut self, trap: Trap) -> Status {
+        self.take_trap_with_vaddr(trap, None)
+    }
+
+    fn take_trap_with_vaddr(&mut self, trap: Trap, fault_vaddr: Option<u64>) -> Status {
+        let cause = match trap {
+            Trap::Exception(e) => e as u64,
+            Trap::Interrupt(i) => 0x80000000_00000000 | (i as u64),
+        };
+
+        // Check delegation to S-mode
+        let delegate = match trap {
+            Trap::Exception(e) => match e {
+                Exception::InstructionAddressMisaligned => (self.medeleg >> 0) & 1 != 0,
+                Exception::InstructionAccessFault       => (self.medeleg >> 1) & 1 != 0,
+                Exception::IllegalInstruction           => (self.medeleg >> 2) & 1 != 0,
+                Exception::Breakpoint                   => (self.medeleg >> 3) & 1 != 0,
+                Exception::LoadAddressMisaligned        => (self.medeleg >> 4) & 1 != 0,
+                Exception::LoadAccessFault              => (self.medeleg >> 5) & 1 != 0,
+                Exception::StoreAddressMisaligned       => (self.medeleg >> 6) & 1 != 0,
+                Exception::StoreAccessFault             => (self.medeleg >> 7) & 1 != 0,
+                Exception::EnvironmentCallFromU         => (self.medeleg >> 8) & 1 != 0,
+                Exception::EnvironmentCallFromS         => (self.medeleg >> 9) & 1 != 0,
+                Exception::InstructionPageFault         => (self.medeleg >> 12) & 1 != 0,
+                Exception::LoadPageFault                => (self.medeleg >> 13) & 1 != 0,
+                Exception::StorePageFault               => (self.medeleg >> 15) & 1 != 0,
+                _ => false,
+            },
+            Trap::Interrupt(i) => {
+                let bit = match i {
+                    Interrupt::SupervisorSoftware => 1,
+                    Interrupt::SupervisorTimer => 5,
+                    Interrupt::SupervisorExternal => 9,
+                    _ => 64, // Not delegated
+                };
+                // SupervisorTimer may also come from delegated MTIP (bit 7)
+                if bit < 64 {
+                    let base_deleg = (self.mideleg >> bit) & 1 != 0;
+                    let timer_deleg = matches!(i, Interrupt::SupervisorTimer) && (self.mideleg >> 7) & 1 != 0;
+                    base_deleg || timer_deleg
+                } else { false }
+            }
+        };
+
+        if delegate && (self.priv_level == Privilege::Supervisor || self.priv_level == Privilege::User) {
+            // Trap to S-mode
+            self.sepc = self.cpu.pc;
+            self.scause = cause;
+            let is_page_fault = matches!(trap, Trap::Exception(Exception::InstructionPageFault | Exception::LoadPageFault | Exception::StorePageFault));
+            self.stval = if is_page_fault { fault_vaddr.unwrap_or(0) } else { 0 };
+            self.mstatus.spp = self.priv_level == Privilege::Supervisor;
+            self.mstatus.spie = self.mstatus.sie;
+            self.mstatus.sie = false;
+            self.priv_level = Privilege::Supervisor;
+            self.last_trap_cause = cause;
+            self.last_trap_epc = self.cpu.pc; // capture original epc BEFORE overwriting pc
+            self.cpu.pc = self.stvec;
+            // Clear pending interrupt bit
+            if let Trap::Interrupt(i) = trap {
+                match i {
+                    Interrupt::SupervisorSoftware => self.mip &= !(1 << 1),
+                    Interrupt::SupervisorTimer    => {
+                        self.mip &= !(1 << 5);
+                        self.mip &= !(1 << 7); // Also clear delegated MTIP
+                    }
+                    Interrupt::SupervisorExternal => self.mip &= !(1 << 9),
+                    _ => {}
+                }
+            }
+        } else {
+            // Trap to M-mode
+            self.mepc = self.cpu.pc;
+            self.mcause = cause;
+            let is_page_fault = matches!(trap, Trap::Exception(Exception::InstructionPageFault | Exception::LoadPageFault | Exception::StorePageFault));
+            self.mtval = if is_page_fault { fault_vaddr.unwrap_or(0) } else { 0 };
+            self.mstatus.mpp = self.priv_level as u8;
+            self.mstatus.mpie = self.mstatus.mie;
+            self.mstatus.mie = false;
+            self.priv_level = Privilege::Machine;
+            self.last_trap_cause = cause;
+            self.last_trap_epc = self.cpu.pc; // capture original epc
+            self.cpu.pc = self.mtvec;
+        }
+
+        let is_interrupt = (cause >> 63) != 0;
+        if !is_interrupt {
+            // For vectored mode
+            let vec = if self.priv_level == Privilege::Machine { self.mtvec } else { self.stvec };
+            if (vec & 1) != 0 {
+                // Vectored
+                self.cpu.pc = (vec & !1) + 4 * cause;
+            }
+        }
+
+        self.wfi = false;
+        Status::Trap(trap)
+    }
+
+    fn do_mret(&mut self) -> Status {
+        let mpie = self.mstatus.mpie;
+        let mpp = self.mstatus.mpp;
+        self.mstatus.mie = mpie;
+        self.mstatus.mpie = true;
+        self.mstatus.mpp = 0; // U-mode
+        self.priv_level = match mpp {
+            0 => Privilege::User,
+            1 => Privilege::Supervisor,
+            3 => Privilege::Machine,
+            _ => Privilege::User,
+        };
+        self.cpu.pc = self.mepc & !1;
+        Status::Running
+    }
+
+    fn do_sret(&mut self) -> Status {
+        let spie = self.mstatus.spie;
+        let spp = self.mstatus.spp;
+        self.mstatus.sie = spie;
+        self.mstatus.spie = true;
+        self.mstatus.spp = false;
+        self.priv_level = if spp { Privilege::Supervisor } else { Privilege::User };
+        self.cpu.pc = self.sepc & !1;
+        Status::Running
+    }
+
+    // Translated memory helpers (for use within supervisor execute)
+
+}
+
+
+// ---- Translated memory instruction execution ----
+// These replace the base Cpu::execute for load/store operations when MMU is active.
+// All other instructions (ALU, branch, etc.) go through cpu.execute normally.
+
+impl Supervisor {
+    /// Execute with full address translation.
+    /// This is the main dispatch that handles both privileged and memory ops.
+    pub fn execute_translated(&mut self, instr: Instr, width: u8, bus: &mut dyn Bus) -> Status {
+        use Instr::*;
+
+        match instr {
+            // I-Type Load
+            Lb { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u8(paddr) as i8 as i64 as u64); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Lh { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u16(paddr) as i16 as i64 as u64); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Lw { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u32(paddr) as i32 as i64 as u64); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Ld { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u64(paddr)); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Lbu { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u8(paddr) as u64); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Lhu { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u16(paddr) as u64); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Lwu { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_reg(rd, bus.read_u32(paddr) as u64); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            // S-Type Store
+            Sb { rs1, rs2, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(paddr) => { bus.write_u8(paddr, self.read_reg(rs2) as u8); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Sh { rs1, rs2, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(paddr) => { bus.write_u16(paddr, self.read_reg(rs2) as u16); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Sw { rs1, rs2, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(paddr) => { bus.write_u32(paddr, self.read_reg(rs2) as u32); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Sd { rs1, rs2, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(paddr) => { bus.write_u64(paddr, self.read_reg(rs2)); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Fld { rd, rs1, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Load, vaddr) {
+                    Ok(paddr) => { self.cpu.write_freg(rd, bus.read_u64(paddr)); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            Fsd { rs1, rs2, imm } => {
+                let vaddr = (self.read_reg(rs1) as i64).wrapping_add(imm) as u64;
+                match self.translate(bus, AccessType::Store, vaddr) {
+                    Ok(paddr) => { bus.write_u64(paddr, self.cpu.read_freg(rs2)); }
+                    Err(t) => return self.take_trap_with_vaddr(t, Some(vaddr)),
+                }
+                self.cpu.pc = self.cpu.pc.wrapping_add(width as u64);
+            }
+            _ => {
+                // This should never be reached - is_load_store guards the call.
+                // If we get here, atomics were handled in execute_supervisor already.
+                // Simpler: just return IllegalInstruction as safety fallback.
+                return self.take_trap(Trap::Exception(Exception::IllegalInstruction));
+            }
+        }
+        Status::Running
+    }
+}

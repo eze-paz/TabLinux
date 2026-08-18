@@ -1,0 +1,389 @@
+//! Boot Alpine Linux using direct RISC-V Linux boot protocol.
+//!
+//! Loads the flat kernel Image at 0x8020_0000, enters in S-mode with
+//! satp=0 (MMU off), a0=0 (hartid), a1=DTB physical address.
+//! The kernel sets up its own page tables.
+
+use riscv_core::types::{Instr, Status, Trap, Exception};
+use riscv_core::execute::Bus;
+use riscv_devices::DeviceBus;
+use riscv_supervisor::{Supervisor, types::Privilege};
+use std::process::Command;
+
+const DRAM_BASE: u64 = 0x8000_0000;
+const DRAM_SIZE: usize = 1 << 30;
+const KERNEL_LOAD_ADDR: u64 = 0x8020_0000;
+
+fn reg_name(i: u8) -> &'static str {
+    match i {
+        0 => "zero", 1 => "ra", 2 => "sp", 3 => "gp",
+        4 => "tp", 5 => "t0", 6 => "t1", 7 => "t2",
+        8 => "s0", 9 => "s1", 10 => "a0", 11 => "a1",
+        12 => "a2", 13 => "a3", 14 => "a4", 15 => "a5",
+        16 => "a6", 17 => "a7", 18 => "s2", 19 => "s3",
+        20 => "s4", 21 => "s5", 22 => "s6", 23 => "s7",
+        24 => "s8", 25 => "s9", 26 => "s10", 27 => "s11",
+        28 => "t3", 29 => "t4", 30 => "t5", 31 => "t6",
+        _ => "??",
+    }
+}
+
+fn fmt_instr(inst: &Instr) -> String {
+    use Instr::*;
+    match *inst {
+        Lui { rd, imm } => format!("lui {}, {:#x}", reg_name(rd), imm),
+        Auipc { rd, imm } => format!("auipc {}, {:#x}", reg_name(rd), imm),
+        Jal { rd, imm } => format!("jal {}, {}", reg_name(rd), imm),
+        Jalr { rd, rs1, imm } => format!("jalr {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Beq { rs1, rs2, imm } => format!("beq {}, {}, {}", reg_name(rs1), reg_name(rs2), imm),
+        Bne { rs1, rs2, imm } => format!("bne {}, {}, {}", reg_name(rs1), reg_name(rs2), imm),
+        Blt { rs1, rs2, imm } => format!("blt {}, {}, {}", reg_name(rs1), reg_name(rs2), imm),
+        Bge { rs1, rs2, imm } => format!("bge {}, {}, {}", reg_name(rs1), reg_name(rs2), imm),
+        Bltu { rs1, rs2, imm } => format!("bltu {}, {}, {}", reg_name(rs1), reg_name(rs2), imm),
+        Bgeu { rs1, rs2, imm } => format!("bgeu {}, {}, {}", reg_name(rs1), reg_name(rs2), imm),
+        Lb { rd, rs1, imm } => format!("lb {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Lh { rd, rs1, imm } => format!("lh {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Lw { rd, rs1, imm } => format!("lw {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Ld { rd, rs1, imm } => format!("ld {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Lbu { rd, rs1, imm } => format!("lbu {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Lhu { rd, rs1, imm } => format!("lhu {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Lwu { rd, rs1, imm } => format!("lwu {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Sb { rs1, rs2, imm } => format!("sb {}, {}({})", reg_name(rs2), imm, reg_name(rs1)),
+        Sh { rs1, rs2, imm } => format!("sh {}, {}({})", reg_name(rs2), imm, reg_name(rs1)),
+        Sw { rs1, rs2, imm } => format!("sw {}, {}({})", reg_name(rs2), imm, reg_name(rs1)),
+        Sd { rs1, rs2, imm } => format!("sd {}, {}({})", reg_name(rs2), imm, reg_name(rs1)),
+        Addi { rd, rs1, imm } => format!("addi {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Slti { rd, rs1, imm } => format!("slti {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Sltiu { rd, rs1, imm } => format!("sltiu {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Xori { rd, rs1, imm } => format!("xori {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Ori { rd, rs1, imm } => format!("ori {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Andi { rd, rs1, imm } => format!("andi {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Slli { rd, rs1, shamt } => format!("slli {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
+        Srli { rd, rs1, shamt } => format!("srli {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
+        Srai { rd, rs1, shamt } => format!("srai {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
+        Add { rd, rs1, rs2 } => format!("add {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Sub { rd, rs1, rs2 } => format!("sub {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Sll { rd, rs1, rs2 } => format!("sll {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Slt { rd, rs1, rs2 } => format!("slt {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Sltu { rd, rs1, rs2 } => format!("sltu {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Xor { rd, rs1, rs2 } => format!("xor {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Srl { rd, rs1, rs2 } => format!("srl {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Sra { rd, rs1, rs2 } => format!("sra {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Or { rd, rs1, rs2 } => format!("or {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        And { rd, rs1, rs2 } => format!("and {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Addiw { rd, rs1, imm } => format!("addiw {}, {}, {}", reg_name(rd), reg_name(rs1), imm),
+        Slliw { rd, rs1, shamt } => format!("slliw {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
+        Srliw { rd, rs1, shamt } => format!("srliw {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
+        Sraiw { rd, rs1, shamt } => format!("sraiw {}, {}, {}", reg_name(rd), reg_name(rs1), shamt),
+        Addw { rd, rs1, rs2 } => format!("addw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Subw { rd, rs1, rs2 } => format!("subw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Sllw { rd, rs1, rs2 } => format!("sllw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Srlw { rd, rs1, rs2 } => format!("srlw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Sraw { rd, rs1, rs2 } => format!("sraw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Mul { rd, rs1, rs2 } => format!("mul {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Mulh { rd, rs1, rs2 } => format!("mulh {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Mulhsu { rd, rs1, rs2 } => format!("mulhsu {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Mulhu { rd, rs1, rs2 } => format!("mulhu {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Div { rd, rs1, rs2 } => format!("div {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Divu { rd, rs1, rs2 } => format!("divu {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Rem { rd, rs1, rs2 } => format!("rem {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Remu { rd, rs1, rs2 } => format!("remu {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Mulw { rd, rs1, rs2 } => format!("mulw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Divw { rd, rs1, rs2 } => format!("divw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Divuw { rd, rs1, rs2 } => format!("divuw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Remw { rd, rs1, rs2 } => format!("remw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Remuw { rd, rs1, rs2 } => format!("remuw {}, {}, {}", reg_name(rd), reg_name(rs1), reg_name(rs2)),
+        Lrw { rd, rs1, .. } => format!("lr.w {}, ({})", reg_name(rd), reg_name(rs1)),
+        Scw { rd, rs1, rs2, .. } => format!("sc.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoswapw { rd, rs1, rs2, .. } => format!("amoswap.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoaddw { rd, rs1, rs2, .. } => format!("amoadd.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoxorw { rd, rs1, rs2, .. } => format!("amoxor.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoandw { rd, rs1, rs2, .. } => format!("amoand.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoorw { rd, rs1, rs2, .. } => format!("amoor.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amominw { rd, rs1, rs2, .. } => format!("amomin.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amomaxw { rd, rs1, rs2, .. } => format!("amomax.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amominuw { rd, rs1, rs2, .. } => format!("amominu.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amomaxuw { rd, rs1, rs2, .. } => format!("amomaxu.w {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Lrd { rd, rs1, .. } => format!("lr.d {}, ({})", reg_name(rd), reg_name(rs1)),
+        Scd { rd, rs1, rs2, .. } => format!("sc.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoswapd { rd, rs1, rs2, .. } => format!("amoswap.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoaddd { rd, rs1, rs2, .. } => format!("amoadd.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoxord { rd, rs1, rs2, .. } => format!("amoxor.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoandd { rd, rs1, rs2, .. } => format!("amoand.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amoord { rd, rs1, rs2, .. } => format!("amoor.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amomind { rd, rs1, rs2, .. } => format!("amomin.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amomaxd { rd, rs1, rs2, .. } => format!("amomax.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amominud { rd, rs1, rs2, .. } => format!("amominu.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Amomaxud { rd, rs1, rs2, .. } => format!("amomaxu.d {}, {}, ({})", reg_name(rd), reg_name(rs2), reg_name(rs1)),
+        Ecall => "ecall".to_string(),
+        Ebreak => "ebreak".to_string(),
+        Fence { .. } => "fence".to_string(),
+        FenceI => "fence.i".to_string(),
+        Csrrw { rd, rs1, csr } => format!("csrrw {}, {}, {:#x}", reg_name(rd), reg_name(rs1), csr),
+        Csrrs { rd, rs1, csr } => format!("csrrs {}, {}, {:#x}", reg_name(rd), reg_name(rs1), csr),
+        Csrrc { rd, rs1, csr } => format!("csrrc {}, {}, {:#x}", reg_name(rd), reg_name(rs1), csr),
+        Csrrwi { rd, zimm, csr } => format!("csrrwi {}, {}, {:#x}", reg_name(rd), zimm, csr),
+        Csrrsi { rd, zimm, csr } => format!("csrrsi {}, {}, {:#x}", reg_name(rd), zimm, csr),
+        Csrrci { rd, zimm, csr } => format!("csrrci {}, {}, {:#x}", reg_name(rd), zimm, csr),
+        Mret => "mret".to_string(),
+        Sret => "sret".to_string(),
+        Uret => "uret".to_string(),
+        Wfi => "wfi".to_string(),
+        SfenceVma { .. } => "sfence.vma".to_string(),
+        Unimp => "unimp".to_string(),
+        Flw { rd, rs1, imm } => format!("flw {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Fld { rd, rs1, imm } => format!("fld {}, {}({})", reg_name(rd), imm, reg_name(rs1)),
+        Fsw { rs1, rs2, imm } => format!("fsw {}, {}({})", reg_name(rs2), imm, reg_name(rs1)),
+        Fsd { rs1, rs2, imm } => format!("fsd {}, {}({})", reg_name(rs2), imm, reg_name(rs1)),
+    }
+}
+
+fn get_branch_target(inst: &Instr, pc: u64) -> Option<u64> {
+    use Instr::*;
+    match *inst {
+        Jal { imm, .. } => Some((pc as i64).wrapping_add(imm) as u64),
+        Jalr { rs1, imm, .. } => {
+            // Can't compute without register value
+            None
+        }
+        Beq { imm, .. } | Bne { imm, .. } | Blt { imm, .. } | Bge { imm, .. } | Bltu { imm, .. } | Bgeu { imm, .. } => {
+            Some((pc as i64).wrapping_add(imm) as u64)
+        }
+        _ => None,
+    }
+}
+
+#[test]
+#[ignore = "heavy: Alpine direct RISC-V Linux boot"]
+fn boot_alpine_full() {
+    eprintln!("[1] Starting boot_alpine_full test (direct RISC-V Linux boot protocol)");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    eprintln!("[2] root = {}", root);
+
+    eprintln!("[3] Reading flat kernel Image...");
+    let kernel = std::fs::read(format!("{root}/kernels/vmlinuz-lts-decompressed.bin")).expect("kernel Image");
+    eprintln!("[4] kernel Image size = {}", kernel.len());
+
+    eprintln!("[5] Reading initrd...");
+    let initrd = std::fs::read(format!("{root}/kernels/boot/initramfs-lts")).expect("initrd");
+    eprintln!("[6] initrd size = {}", initrd.len());
+
+    eprintln!("[7] Creating DeviceBus...");
+    let mut bus = DeviceBus::new(DRAM_SIZE);
+    eprintln!("[8] DeviceBus created");
+
+    eprintln!("[9] Loading flat kernel Image at {:#x}...", KERNEL_LOAD_ADDR);
+    bus.load_blob(KERNEL_LOAD_ADDR, &kernel);
+    eprintln!("[10] kernel loaded");
+
+    eprintln!("[11] Computing initrd load address...");
+    let initrd_load = (DRAM_BASE + (DRAM_SIZE as u64) - initrd.len() as u64 - 0x100_0000) & !0xFFFFu64;
+    eprintln!("[12] initrd_load = {:#x}", initrd_load);
+    bus.load_blob(initrd_load, &initrd);
+    let initrd_end = initrd_load + initrd.len() as u64;
+    eprintln!("[13] initrd loaded, end = {:#x}", initrd_end);
+
+    eprintln!("[14] Generating DTB...");
+    let out = Command::new("python3")
+        .arg(format!("{root}/kernels/gen_dtb_v2.py"))
+        .arg(format!("{initrd_load:#x}")).arg(format!("{initrd_end:#x}"))
+        .current_dir(format!("{root}/kernels")).output().expect("gen dtb");
+    assert!(out.status.success(), "dtb gen: {}", String::from_utf8_lossy(&out.stderr));
+    eprintln!("[15] DTB generated");
+
+    eprintln!("[16] Reading DTB...");
+    let dtb = std::fs::read(format!("{root}/kernels/virt.dtb")).expect("virt.dtb");
+    eprintln!("[17] DTB size = {}", dtb.len());
+    let dtb_load = (initrd_load - dtb.len() as u64 - 0x1000) & !0xFFFu64;
+    eprintln!("[18] dtb_load = {:#x}", dtb_load);
+    bus.load_blob(dtb_load, &dtb);
+    eprintln!("[19] DTB loaded");
+
+    eprintln!("[20] Creating Supervisor for EFI entry at {:#x}...", KERNEL_LOAD_ADDR);
+    let mut s = Supervisor::new(KERNEL_LOAD_ADDR, 0);
+    eprintln!("[21] Supervisor created");
+
+    // Direct RISC-V Linux boot protocol: enter in S-mode, MMU off
+    s.priv_level = Privilege::Supervisor;
+    eprintln!("[22] priv_level set to Supervisor");
+
+    // satp = 0: MMU disabled, kernel runs with physical addressing
+    s.satp = riscv_supervisor::Satp { mode: 0, asid: 0, ppn: 0 };
+    eprintln!("[23] satp = 0 (MMU off)");
+
+    // a0 = hartid (0 for single-hart boot)
+    s.cpu.write_reg(10, 0u64); // a0 = 0 (EFI handle, not hartid)
+    eprintln!("[24] a0 = 0 (hartid)");
+
+    // a1 = physical address of DTB
+    s.cpu.write_reg(11, dtb_load); // a1 = physical address of DTB
+    eprintln!("[25] a1 = dtb_load ({:#x})", dtb_load);
+
+    // Stack pointer — point to top of DRAM, well above kernel/initrd
+    let sp = DRAM_BASE + DRAM_SIZE as u64 - 0x10000;
+    s.cpu.write_reg(2, sp);
+    eprintln!("[26] sp = {:#x}", sp);
+
+    // Delegate exceptions and interrupts to S-mode so kernel handles them
+    s.medeleg = 0xB1FF;
+    eprintln!("[27] medeleg set");
+    s.mideleg = 0x2A2; // 0x222 | 0x80 (delegate MTIP to S-mode)
+    eprintln!("[28] mideleg set");
+
+    let mut prev_console = 0usize;
+    let mut trap_count = 0u64;
+    let max_steps = 10_000_000;
+
+    eprintln!("[29] Starting simulation loop...");
+    
+    // Trace the first 50 instructions in detail
+    let trace_limit = 50;
+    
+    // Hang-probe variables
+    let mut post_mmu_trap_count = 0usize;
+    let mut last_trap_cause: Option<String> = None;
+    let mut spin_count = 0usize;
+    let mmu_enabled_step = 253_402usize;
+
+    for step in 0..max_steps {
+        bus.tick();
+        
+        // Capture state BEFORE step
+        let prev_pc = s.cpu.pc;
+        let prev_regs: [u64; 32] = s.cpu.x;
+        let prev_priv = s.priv_level;
+        
+        // Timer debug: check if timer interrupt should fire
+        let mtime = bus.read_mtime();
+        let mtimecmp = bus.get_mtimecmp();
+        let timer_int = bus.check_timer_interrupt();
+        if step % 100_000 == 0 || (timer_int && step > 100_000) {
+            eprintln!(
+                "[timer-debug step={}] mtime={} mtimecmp={} timer_int={} mie={:#x} mip={:#x} mstatus.sie={} priv={:?}",
+                step, mtime, mtimecmp, timer_int, s.mie, s.mip, s.mstatus.sie, s.priv_level
+            );
+        }
+        let status = s.step(&mut bus);
+        
+        if s.console_len > prev_console {
+            let n = s.console_len.min(s.console_buf.len());
+            let text = String::from_utf8_lossy(&s.console_buf[prev_console..n]);
+            eprint!("{}", text);
+            prev_console = n;
+        }
+
+        // Detailed tracing for first N instructions
+        if step < trace_limit || (step >= 253400 && step <= 253430) {
+            let raw = s.last_fetched_raw;
+            let width = if (s.last_fetch_half & 0b11) != 0b11 { 2 } else { 4 };
+            
+            // Decode the instruction for display
+            let instr = if width == 2 {
+                match riscv_core::compressed::decompress(s.last_fetch_half) {
+                    Some(ins) => ins,
+                    None => {
+                        // Try to get the full 32-bit raw for display
+                        let hi = (raw >> 16) as u16;
+                        let lo = (raw & 0xFFFF) as u16;
+                        riscv_core::decode::decode(raw)
+                    }
+                }
+            } else {
+                riscv_core::decode::decode(raw)
+            };
+            
+            let disasm = fmt_instr(&instr);
+            let mut trace_line = format!("[TRACE step={:3}] pc={:#018x} raw={:#010x} {:2}B | {:20} | priv={:?}",
+                step, prev_pc, raw, width, disasm, prev_priv);
+            
+            // Show key registers for branch/jump instructions
+            use Instr::*;
+            match instr {
+                Jalr { rd, rs1, imm } => {
+                    let target = (prev_regs[rs1 as usize] as i64).wrapping_add(imm) as u64 & !1;
+                    trace_line.push_str(&format!(" | {}={:#x} -> target={:#x}", reg_name(rs1), prev_regs[rs1 as usize], target));
+                }
+                Beq { rs1, rs2, imm } | Bne { rs1, rs2, imm } | Blt { rs1, rs2, imm } | Bge { rs1, rs2, imm } | Bltu { rs1, rs2, imm } | Bgeu { rs1, rs2, imm } => {
+                    let target = (prev_pc as i64).wrapping_add(imm) as u64;
+                    trace_line.push_str(&format!(" | {}={:#x} {}={:#x} -> target={:#x}", 
+                        reg_name(rs1), prev_regs[rs1 as usize], reg_name(rs2), prev_regs[rs2 as usize], target));
+                }
+                Jal { rd, imm } => {
+                    let target = (prev_pc as i64).wrapping_add(imm) as u64;
+                    trace_line.push_str(&format!(" -> target={:#x}", target));
+                }
+                Ld { rd, rs1, imm } | Lw { rd, rs1, imm } | Lh { rd, rs1, imm } | Lb { rd, rs1, imm } |
+                Lbu { rd, rs1, imm } | Lhu { rd, rs1, imm } | Lwu { rd, rs1, imm } => {
+                    let addr = (prev_regs[rs1 as usize] as i64).wrapping_add(imm) as u64;
+                    trace_line.push_str(&format!(" | {}={:#x} -> addr={:#x}", reg_name(rs1), prev_regs[rs1 as usize], addr));
+                }
+                Sd { rs1, rs2, imm } | Sw { rs1, rs2, imm } | Sh { rs1, rs2, imm } | Sb { rs1, rs2, imm } => {
+                    let addr = (prev_regs[rs1 as usize] as i64).wrapping_add(imm) as u64;
+                    trace_line.push_str(&format!(" | {}={:#x} {}={:#x} -> addr={:#x}", 
+                        reg_name(rs1), prev_regs[rs1 as usize], reg_name(rs2), prev_regs[rs2 as usize], addr));
+                }
+                _ => {}
+            }
+            
+            // Show next PC after execution
+            trace_line.push_str(&format!(" | next_pc={:#x}", s.cpu.pc));
+            
+            // If this was a trap, show trap info
+            if let Status::Trap(ref t) = status {
+                trace_line.push_str(&format!(" | TRAP={:?}", t));
+            }
+            
+            eprintln!("{}", trace_line);
+        }
+        
+        // Sample PC every 1M steps to check for progress
+        if step % 1_000_000 == 0 {
+            eprintln!("[step {}] pc={:#x} priv={:?}", step, s.cpu.pc, s.priv_level);
+        }
+        match status {
+            Status::Running => {}
+            Status::Wfi => {}
+            Status::Trap(t) => {
+                trap_count += 1;
+                if trap_count <= 20 {
+                    eprintln!("[trap {} step {}] {:?} sepc={:#x} scause={:#x} stval={:#x} pc={:#x} satp={:#x} stvec={:#x}",
+                        trap_count, step, t, s.sepc, s.scause, s.stval, s.cpu.pc, (s.satp.mode as u64) << 60 | (s.satp.asid as u64) << 44 | s.satp.ppn, s.stvec);
+                }
+                if step > mmu_enabled_step {
+                    post_mmu_trap_count += 1;
+                    last_trap_cause = Some(format!("{:?}", t));
+                    eprintln!("POST-MMU TRAP step={} trap={:?} sepc={:x} stval={:x} pc={:x}", step, t, s.sepc, s.stval, s.cpu.pc);
+                    if post_mmu_trap_count >= 5 {
+                        eprintln!("Too many post-MMU traps, breaking");
+                        break;
+                    }
+                }
+                if trap_count >= 1000 {
+                    eprintln!("Trap storm at step {}", step);
+                    break;
+                }
+            }
+        }
+        {
+            let pc = s.cpu.pc;
+            if pc >= 0xffffffff80a1399c && pc <= 0xffffffff80a13ec2 {
+                spin_count += 1;
+            }
+        }
+    }
+
+    eprintln!("=== SUMMARY ===");
+    eprintln!("total_traps={} post_mmu_traps={}", trap_count, post_mmu_trap_count);
+    eprintln!("last_trap_cause={:?}", last_trap_cause);
+    eprintln!("spin_count={} (PC in 0xffffffff80a1399c..0xffffffff80a13ec2)", spin_count);
+    eprintln!("final_pc={:x}", s.cpu.pc);
+    eprintln!("final_tp={:x}", s.cpu.x[4]);
+    eprintln!("tp+0x08 = {:x}", bus.read_u64(s.cpu.x[4].wrapping_add(8)));
+    eprintln!("tp+0x518 = {:x}", bus.read_u64(s.cpu.x[4].wrapping_add(0x518)));
+    eprintln!("tp+0x00 = {:x}", bus.read_u64(s.cpu.x[4]));
+
+    let console = String::from_utf8_lossy(&s.console_buf[..s.console_len.min(8192)]);
+    eprintln!("\n=== END console={} bytes traps={} ===", console.len(), trap_count);
+    assert!(console.contains("Linux") || console.len() > 100,
+            "Expected kernel banner, got: {:?}", console);
+}

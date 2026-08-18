@@ -1,0 +1,7 @@
+[package]
+name = "rvdis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riscv-core = { path = "../riscv-core" }

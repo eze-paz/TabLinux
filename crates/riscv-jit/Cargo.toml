@@ -1,0 +1,13 @@
+[package]
+name = "riscv-jit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riscv-core = { path = "../riscv-core" }
+# no_std + alloc, which is what the supervisor needs. The default features pull
+# in std and the component model, neither of which is wanted here.
+wasm-encoder = { version = "0.245", default-features = false }
+
+[features]
+std = []

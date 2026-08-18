@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/riscv-core",
+    "crates/rvdis",
+    "crates/riscv-supervisor",
+    "crates/riscv-devices",
+    "crates/riscv-hostnet",
+    "crates/riscv-machine",
+    "crates/riscv-wasm",
+    "crates/riscv-jit",
+    "crates/riscv-harness",
+    "crates/riscv-test-harness",
+    "crates/riscv-vm",
+    "riscvboot",
+]
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -1,0 +1,10 @@
+[package]
+name = "riscv-test-harness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riscv-core = { path = "../riscv-core" }
+riscv-supervisor = { path = "../riscv-supervisor" }
+riscv-devices = { path = "../riscv-devices" }
+riscv-harness = { path = "../riscv-harness" }

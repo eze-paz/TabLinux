@@ -1,0 +1,14 @@
+[package]
+name = "riscv-machine"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+std = ["riscv-devices/std"]
+
+[dependencies]
+riscv-core = { path = "../riscv-core" }
+riscv-supervisor = { path = "../riscv-supervisor" }
+riscv-jit = { path = "../riscv-jit" }
+riscv-devices = { path = "../riscv-devices" }

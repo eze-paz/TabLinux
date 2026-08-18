@@ -1,0 +1,35 @@
+rusty-riscv
+Copyright the rusty-riscv authors.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components bundled in this repository
+--------------------------------------------------------------------------------
+
+The `kernels/` directory contains prebuilt binaries that are NOT part of this
+project's own source code and are redistributed here only for convenience. Each
+retains its own upstream license:
+
+* kernels/vmlinuz-lts, kernels/vmlinuz-lts.raw
+  The Linux kernel. Licensed under GPL-2.0. This is a stock Alpine Linux LTS
+  kernel build. Corresponding source is available from the Alpine Linux project
+  (https://gitlab.alpinelinux.org/alpine/aports) and kernel.org.
+
+* kernels/boot/initramfs-lts and the ext4 disk image
+  Alpine Linux userspace (busybox, musl, apk-tools, and packaged software).
+  Alpine packages are distributed under their respective licenses (mostly MIT,
+  BSD, GPL). See https://alpinelinux.org and the package index for details.
+
+* Bundled CPython (in the disk image)
+  Python is distributed under the Python Software Foundation License.
+  See https://docs.python.org/3/license.html.
+
+--------------------------------------------------------------------------------
+Acknowledgements
+--------------------------------------------------------------------------------
+
+* The virtio, PLIC, and CLINT device models follow the RISC-V and virtio
+  specifications and are informed by prior open emulators.
+* v86 (https://github.com/copy/v86, BSD-2-Clause) was a reference for
+  browser-side networking / WISP relay patterns.

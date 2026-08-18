@@ -1,0 +1,13 @@
+[package]
+name = "riscv-devices"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# Enables the file-backed block device. The wasm build supplies its own
+# BlockBackend (OPFS + HTTP range) and stays no_std.
+std = []
+
+[dependencies]
+riscv-core = { path = "../riscv-core" }

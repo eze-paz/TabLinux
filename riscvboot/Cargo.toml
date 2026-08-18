@@ -1,0 +1,13 @@
+[package]
+name = "riscvboot"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "riscvboot"
+path = "src/main.rs"
+
+[dependencies]
+riscv-core = { path = "../crates/riscv-core" }
+riscv-supervisor = { path = "../crates/riscv-supervisor" }
+riscv-devices = { path = "../crates/riscv-devices" }

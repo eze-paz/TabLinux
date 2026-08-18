@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Without this a phone lays the page out at ~980px and scales it down: the
+     terminal comes out unreadable and the stacking media query never fires,
+     because the layout viewport never reports a small width. viewport-fit
+     keeps it out from under the notch. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>riscv-vm · Alpine in the browser</title>
+<style>
+    :root {
+        --bg: #0c0c0c;
+        --fg: #d0d0d0;
+        /* xterm's default 8, which is what the guest's SGR codes mean. */
+        --c0: #2e3436; --c1: #cc0000; --c2: #4e9a06; --c3: #c4a000;
+        --c4: #3465a4; --c5: #75507b; --c6: #06989a; --c7: #d3d7cf;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+           font: 14px/1.25 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    #bar { display: flex; gap: 14px; align-items: center; padding: 6px 10px;
+           background: #16161e; border-bottom: 1px solid #2a2a35;
+           font-size: 12px; white-space: nowrap; overflow: hidden; }
+    #bar b { color: #9ecbff; font-weight: 600; }
+    #dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex: none; }
+    #dot.on { background: #4e9a06; }
+    #dot.err { background: #cc0000; }
+    #stats { margin-left: auto; color: #6b7280; }
+    /* Inherit the bar's type rather than the platform's form styling, which is
+       a good deal larger and would set the bar's height on its own. */
+    #bar select, #bar input { font: inherit; color: inherit; accent-color: #4e9a06;
+           background: #1e1e28; border: 1px solid #2a2a35; border-radius: 3px;
+           padding: 1px 3px; vertical-align: middle; }
+    #bar label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+    /* Fill the viewport: bar on top, terminal and stats side by side under it,
+       nothing scrolling but the panel. The grid itself is still fixed-width by
+       construction — main.js recomputes cols/rows from the space available and
+       rebuilds it, rather than letting text reflow and break cursor
+       addressing. */
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; overflow: hidden; }
+    #main { flex: 1; display: flex; min-height: 0; }
+    #wrap { flex: 1; min-width: 0; overflow: hidden; padding: 6px 8px;
+            position: relative; }
+    #term { outline: none; cursor: text; white-space: pre; }
+
+    /* The input sink. A <div> cannot open a soft keyboard however many
+       listeners it has, so keystrokes come from a real focusable textarea that
+       sits invisibly over the terminal. It must stay in the layout — display
+       or visibility hidden, or zero size, and mobile browsers decline to focus
+       it — hence 1px and transparent. 16px font because anything smaller makes
+       iOS zoom the page on focus. It lives outside #term because paint()
+       rewrites that element's innerHTML wholesale. */
+    /* Invisible but NOT opacity:0 / display:none: several Android browsers
+       dismiss the soft keyboard the instant it opens if the focused element is
+       fully transparent or has no box. Hide it instead with transparent text,
+       background and caret, at a real 1px box and font-size:16px (>=16px stops
+       iOS zooming the page on focus). */
+    #kbd { position: absolute; top: 0; left: 0; width: 1px; height: 1px;
+           padding: 0; border: 0; outline: none; resize: none;
+           font-size: 16px; color: transparent; background: transparent;
+           caret-color: transparent; overflow: hidden; z-index: 1; }
+    /* Touch-only accessory key bar. Fixed above the soft keyboard (JS sets its
+       bottom offset from the visual viewport); hidden until the keyboard opens. */
+    #keybar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+              display: none; gap: 4px; padding: 6px; box-sizing: border-box;
+              background: #161b22; border-top: 1px solid #1e2630; }
+    #keybar .kb { box-sizing: border-box; flex: 1 1 0; min-width: 0; height: 40px;
+                  border-radius: 7px; border: 1px solid #30363d; background: #21262d;
+                  color: #c9d1d9; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 14px;
+                  display: flex; align-items: center; justify-content: center;
+                  cursor: pointer; user-select: none; -webkit-user-select: none;
+                  touch-action: manipulation; }
+    #keybar .kb:active { background: #30363d; }
+    #keybar .kb.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+    #panel { width: 200px; flex: none; padding: 10px 12px; overflow-y: auto;
+             background: #101018; border-left: 1px solid #2a2a35; font-size: 11px; }
+    #panel h4 { margin: 0 0 6px; font-size: 10px; letter-spacing: .08em;
+                text-transform: uppercase; color: #6b7280; font-weight: 600; }
+    #panel .grp { margin-bottom: 14px; }
+    #panel .kv { display: flex; justify-content: space-between; gap: 8px;
+                 padding: 1px 0; color: #9aa4b2; }
+    #panel .kv span:last-child { color: #d0d0d0; font-variant-numeric: tabular-nums; }
+    #panel .big { font-size: 20px; color: #9ecbff; font-variant-numeric: tabular-nums;
+                  line-height: 1.1; }
+    #panel .unit { font-size: 10px; color: #6b7280; margin-left: 3px; }
+    /* A bar rather than a number alone: the useful thing about MIPS here is
+       whether it just fell off a cliff, and a shape shows that at a glance. */
+    #panel .meter { height: 4px; background: #1e1e28; border-radius: 2px;
+                    overflow: hidden; margin: 5px 0 2px; }
+    #panel .meter i { display: block; height: 100%; background: #4e9a06;
+                      transition: width .3s; }
+    /* Stacked once there is no room beside the terminal. */
+    @media (max-width: 720px) {
+        #main { flex-direction: column; }
+        #panel { width: auto; border-left: 0; border-top: 1px solid #2a2a35;
+                 max-height: 30vh; }
+        #panel .grp { margin-bottom: 8px; }
+    }
+    #term .row { height: 1.25em; }
+    #term .cur { background: var(--fg); color: var(--bg); }
+    #term .bo { font-weight: 700; }
+    .f0{color:var(--c0)} .f1{color:var(--c1)} .f2{color:var(--c2)} .f3{color:var(--c3)}
+    .f4{color:var(--c4)} .f5{color:var(--c5)} .f6{color:var(--c6)} .f7{color:var(--c7)}
+    .b0{background:transparent} .b1{background:var(--c1)} .b2{background:var(--c2)}
+    .b3{background:var(--c3)} .b4{background:var(--c4)} .b5{background:var(--c5)}
+    .b6{background:var(--c6)} .b7{background:var(--c7)}
+</style>
+</head>
+<body>
+<div id="bar">
+    <span id="dot"></span>
+    <span id="status">starting…</span>
+    <span><b id="net">net</b> <span id="netinfo">offline</span></span>
+    <span id="stats"></span>
+</div>
+<div id="main">
+    <!-- title, not a paragraph under the terminal: the shortcuts are worth
+         being able to find and not worth a permanent line of screen. -->
+    <div id="wrap" title="Select text, then Ctrl-C or right-click to copy. With nothing selected, Ctrl-V, right-click or middle-click pastes, and Ctrl-C interrupts.">
+        <div id="term"></div>
+    </div>
+    <aside id="panel">
+        <div class="grp">
+            <h4>cpu</h4>
+            <div class="big"><span id="p-mips">—</span><span class="unit">MIPS busy</span></div>
+            <div class="meter"><i id="p-meter" style="width:0"></i></div>
+            <div class="kv"><span>raw (incl. idle)</span><span id="p-raw">—</span></div>
+            <div class="kv"><span>average busy</span><span id="p-avg">—</span></div>
+            <div class="kv"><span>idle-loop share</span><span id="p-idleshare">—</span></div>
+            <div class="kv"><span>retired</span><span id="p-steps">—</span></div>
+            <div class="kv"><span>uptime</span><span id="p-up">—</span></div>
+        </div>
+        <div class="grp">
+            <h4>memory</h4>
+            <div class="kv"><span>guest ram</span><span id="p-ram">—</span></div>
+            <div class="kv"><span>tab heap</span><span id="p-heap">—</span></div>
+            <div class="kv"><span>disk</span><span id="p-disk">—</span></div>
+        </div>
+        <div class="grp">
+            <h4>jit</h4>
+            <div class="kv"><span>state</span><span id="p-jit">—</span></div>
+            <div class="kv"><span>blocks</span><span id="p-blocks">—</span></div>
+            <div class="kv"><span>compiled</span><span id="p-cov">—</span></div>
+        </div>
+        <div class="grp">
+            <h4>profile <span style="text-transform:none;letter-spacing:0">(session)</span></h4>
+            <!-- Where the worker's wall time went: guest execution, the JIT
+                 pipeline (our codegen + V8 compile + link), everything else
+                 the pump does, and time asleep between pumps. -->
+            <div class="kv"><span>running guest</span><span id="pr-run">—</span></div>
+            <div class="kv"><span>compiling</span><span id="pr-compile">—</span></div>
+            <div class="kv"><span>io + misc</span><span id="pr-io">—</span></div>
+            <div class="kv"><span>idle</span><span id="pr-idle">—</span></div>
+            <div class="kv"><span>kernel / user</span><span id="pr-priv">—</span></div>
+            <div class="kv"><span>interp share</span><span id="pr-interp">—</span></div>
+            <div class="kv"><span>interp top</span><span id="pr-itop">—</span></div>
+            <div class="kv"><span>chain stops</span><span id="pr-chain">—</span></div>
+            <div class="kv"><span>gen bumps</span><span id="pr-gen">—</span></div>
+            <div class="kv"><span>compile vol</span><span id="pr-cvol">—</span></div>
+            <div class="kv"><span>resets</span><span id="pr-resets">—</span></div>
+            <!-- One click puts the whole raw profile on the clipboard, so a
+                 session can be reported without transcribing the panel. -->
+            <div class="kv"><span><a href="#" id="pr-copy" style="color:#6b7280">copy json</a></span><span id="pr-copied"></span></div>
+        </div>
+        <div class="grp">
+            <h4>network</h4>
+            <div class="kv"><span>relay</span><span id="p-net">—</span></div>
+            <div class="kv"><span>tx / rx</span><span id="p-frames">—</span></div>
+        </div>
+        <div class="grp">
+            <h4>terminal</h4>
+            <div class="kv"><span>size</span><span id="p-size">—</span></div>
+        </div>
+    </aside>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

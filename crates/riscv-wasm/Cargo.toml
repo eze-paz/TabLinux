@@ -1,0 +1,22 @@
+[package]
+name = "riscv-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+riscv-machine = { path = "../riscv-machine" }
+riscv-devices = { path = "../riscv-devices" }
+# The Bus trait, whose read_u*/write_u* the JIT memory path calls.
+riscv-core = { path = "../riscv-core" }
+# AccessType, for the memory path compiled blocks call into.
+riscv-supervisor = { path = "../riscv-supervisor" }
+# Generates the wasm for hot blocks; JS instantiates what this produces.
+riscv-jit = { path = "../riscv-jit" }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

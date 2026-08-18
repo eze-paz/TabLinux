@@ -1,0 +1,18 @@
+[package]
+name = "jit-prototype"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+# Keep the wasm small and the exports predictable; there is no panic path worth
+# unwinding in a module this size.
+panic = "abort"
+
+[workspace]

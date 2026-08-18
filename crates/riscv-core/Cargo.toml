@@ -1,0 +1,10 @@
+[package]
+name = "riscv-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# sqrt/trunc/fma for the FPU. `core` has no float math and this crate stays
+# no_std for the wasm target, so std::f64 is not available. libm is pure Rust
+# and builds for wasm32 unchanged.
+libm = "0.2"
