@@ -32,7 +32,6 @@ __pycache__/
 /logs/
 /kernels/small.ext4
 /logs/
-web/pkg/
 kernels/boot/initramfs-nosig
 kernels/shell.snap*
 kernels/disk-ext4.img*
