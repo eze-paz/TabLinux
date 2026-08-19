@@ -139,7 +139,7 @@ const P9_DIR = "shared"; // OPFS directory mirroring the share
 // OPFS tree and serves it on demand: directory listings are walked from OPFS
 // here and merged with the dehydrated-Dropbox cloud index the page pushes over
 // (so cloud-only placeholders show up); file contents are fetched through
-// `/files/<path>`, which the sandpie service worker serves from OPFS or hydrates
+// `/files/<path>`, which the host service worker serves from OPFS or hydrates
 // from Dropbox. Guest changes write back to OPFS and, via the page's sync-core,
 // to Dropbox. Compiled JIT blocks persist across sessions, and the boot is quiet.
 // Names the VM keeps in the OPFS root (its own disk image and snapshots) are
@@ -253,7 +253,7 @@ async function listDirSerialized(rel) {
     return out;
 }
 
-/// Fetch the bytes of a file the way sandpie serves them: `/files/<path>` is
+/// Fetch the bytes of a file the way the host serves them: `/files/<path>` is
 /// intercepted by its service worker, which returns the local OPFS copy or
 /// hydrates a Dropbox placeholder first.
 async function fetchFileBytes(rel) {
@@ -1101,7 +1101,7 @@ async function boot() {
     // cause was real and is fixed: compiled blocks are keyed on physical
     // address and nothing invalidated them on fence.i, so Linux patched its own
     // text during early boot and the JIT kept running the pre-patch version.
-    // jit-coldboot-test.js covers that path now.
+    // bench/jit-coldboot-test.js covers that path now.
     // The JIT is always on — it is the whole point of this engine.
     const jitOn = true;
     vm.jit_enable(true);

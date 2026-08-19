@@ -62,7 +62,7 @@ deficient, and conclusions drawn from it are withdrawn.** On the same day the
 A/B instrument reported two levers as "+2-3%, verified," the deployed page
 regressed from ~5s to 40-50s on its main path (snapshot restore) — reported by
 the user, never predicted or caught by any instrument here. The deploy was
-reverted (sandpie-server 804a5db) on that report.
+reverted (relay server 804a5db) on that report.
 
 What was wrong, specifically:
 

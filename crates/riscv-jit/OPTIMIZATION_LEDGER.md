@@ -25,7 +25,7 @@ Consequences: (1) TurboFan is NOT the bottleneck — it does a good job on the 2
 why the five bytecode levers were null. (2) The wins are in the machinery: the **cold interpreter tail**
 (block cache / faster warmup), **fewer block boundaries** (region formation), and **per-boundary work**
 (device-poll cadence, cheaper block entry). Aim here, and re-run `--prof` after each change to watch the
-bucket move. Harnesses: `mips.js` / `pybench/pybench-vm.js` under `node --prof`.
+bucket move. Harnesses: `bench/mips.js` / `pybench/pybench-vm.js` under `node --prof`.
 
 ## The things that actually moved the needle
 - **Selective `fence.i` flush (spurious-flush elimination)** — SHIPPED, the **biggest single cut to the
@@ -213,8 +213,8 @@ the UNBUILT structural levers below, not at more peephole/regalloc work.
   trace follows `jal` within the page (so physical fall-through = `paddr + last.off + last.width`,
   NOT `paddr + sum(widths)` — that bug shipped once and the interp-vs-JIT harness caught it).
 - `count_insns` advances instret by the full decoded count even when instructions are fused/merged.
-- The **interp-vs-JIT harness (`jit-vm-test.js`) is the real correctness gate** for batch/chain changes;
-  `jit-difftest.js` only covers single blocks. Run both.
+- The **interp-vs-JIT harness (`bench/jit-vm-test.js`) is the real correctness gate** for batch/chain changes;
+  `bench/jit-difftest.js` only covers single blocks. Run both.
 
 ## UNBUILT (still open) — structural only; per-block codegen is a dead end (see Takeaway)
 1. **Single-page-sfence chain precision** — a data-page munmap that trips `page_may_have_keys` still
@@ -245,9 +245,9 @@ does redundantly: ASID keying (shipped +14%), and the sfence/chain-cache levers 
 whole remaining direction.
 
 ## How to measure (so results are trustworthy on this box)
-- Steady-state MIPS: `mips.js` (warmup + median-of-best-of-8 slices). Tier probes: `tiertrace.js` +
-  `--trace-wasm-compilation-times`. Reach probes: `fusestat.js`, `linkstat.js` (jit_fuse_stats / jit_link_stats).
-- A/B two builds: `jit-fast-ab.js` (interleaved, `--null` first; believe nothing under the reported
+- Steady-state MIPS: `bench/mips.js` (warmup + median-of-best-of-8 slices). Tier probes: `bench/tiertrace.js` +
+  `--trace-wasm-compilation-times`. Reach probes: `bench/fusestat.js`, `bench/linkstat.js` (jit_fuse_stats / jit_link_stats).
+- A/B two builds: `bench/jit-fast-ab.js` (interleaved, `--null` first; believe nothing under the reported
   resolution). SLICES>~320 OOMs the table; box shows ~2–5% self-bias.
 - Build: `build-jitnode.sh <dir>`; flip a `*_ON` const for A/B and build both to `$HOME/...` (WSL wipes
   /tmp on idle, so keep builds + scripts under $HOME and build+run in one shell).

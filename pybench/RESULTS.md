@@ -35,7 +35,7 @@ median of per-pair ratios, 8 pairs, SCALE=3 (~600M-step window).
 | chain_max 1024 → 16384 (runtime knob) | 0.742 @ SCALE=1, noisy 2/6 | inconclusive |
 | chain_max 1024 → 8192, retest on combo @ SCALE=3 | 1.053, 5/8 | CONTRADICTS the above — unresolved, left at 1024 (sweep via `set_chain_max`) |
 | COMBO: slim CSE + chain 65536 | **1.124, 7/8** | ADOPTED — wins compose |
-| combo on the SHELL workload (jit-ab.py) | 1.037, "no resolvable difference" | no regression outside Python |
+| combo on the SHELL workload (bench/jit-ab.py) | 1.037, "no resolvable difference" | no regression outside Python |
 | TurboFan ceiling (`--no-liftoff`, same binary both sides) | 1.048, 4/6 | dynamic tiering already works; codegen-quality headroom ≈ 5% |
 
 Meta-lesson (twice-measured): on V8's baseline wasm tier, ADDING generated
@@ -74,7 +74,7 @@ hotness threshold (304k/window "noblock" chain exits).
   by storing bytes + background-compiling at init — then measured USELESS:
   0/46 cross-session boot hits, because batch composition is timing-dependent.
 - Deterministic batching (sort by paddr, content-defined cuts, min 8 max 96):
-  fixed the keys (9/44 hits) but −32% steady-state (6/6 pairs, jit-ab.py) —
+  fixed the keys (9/44 hits) but −32% steady-state (6/6 pairs, bench/jit-ab.py) —
   more, smaller, sorted modules multiply cross-INSTANCE tail-calls (V8
   instance-switch cost). Reverted. The chain wants flow-order big modules.
 - Bound on the whole lever class from the profiler: V8 compile ≈ 0.3s/session
@@ -146,8 +146,8 @@ revalidation lever, unbuilt.
 ## Correctness gates (all levers pass before A/B)
 
 1. `cargo run --release -p riscv-jit --example difftest` + `node
-   jit-difftest.js` — 400/400 register+memory match (no-TLB path)
-2. `node jit-vm-test.js` — interpreter-vs-JIT byte-identical console on a
+   bench/jit-difftest.js` — 400/400 register+memory match (no-TLB path)
+2. `node bench/jit-vm-test.js` — interpreter-vs-JIT byte-identical console on a
    real Alpine boot + shell workload (exercises TLB + group paths)
 3. `pybench` CHECK — identical Python results every run
 

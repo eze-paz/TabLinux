@@ -20,7 +20,7 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
-        # Cross-origin isolation, matching production (sandpie-server sets
+        # Cross-origin isolation, matching production (the relay server sets
         # these globally): SharedArrayBuffer for the worker's futex naps.
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "credentialless")

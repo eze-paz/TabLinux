@@ -226,7 +226,7 @@ TCP state machine to no benefit is how weeks disappear.
 3. ~~**Point v86's adapter at them.**~~ **Done** — item 0 above.
 4. ~~**Stand up a WISP relay.**~~ **Done — `apk` works.**
 
-   The relay is `wisp.js` in the *sandpie-server* repo (mounted at `/wisp`,
+   The relay is `wisp.js` in the *relay server* repo (mounted at `/wisp`,
    inert unless `WISP_ENABLED=1`, allowlisted to Alpine mirrors by default).
    Neither `wisp-server-node` nor `epoxy-server` was used: the protocol is four
    packet types, and writing it meant the allowlist and SSRF guard could be
@@ -236,7 +236,7 @@ TCP state machine to no benefit is how weeks disappear.
    — the hook fake_network calls for every TCP connection it terminates:
 
    ```bash
-   # relay (in the sandpie-server checkout)
+   # relay (in the relay server checkout)
    WISP_ENABLED=1 WISP_ALLOW_ORIGINS=http://localhost:8139 \
        node scripts/wisp-standalone.mjs 6970
    # then open
@@ -306,7 +306,7 @@ intact.
 
 ```bash
 python3 kernels/mkdisk.py     # build disk-ext4.img.gz (256 MiB -> ~255 KiB)
-python3 serve.py 8139         # no-cache static server; see the warning below
+python3 bench/serve.py 8139         # no-cache static server; see the warning below
 ```
 
 The worker mounts it for you on restore; the terminal prints
@@ -332,7 +332,7 @@ superblock magic at offset 0x438.
 
 Two things that will bite:
 
-- **Use `serve.py`, not `python -m http.server`.** The stdlib server sends no
+- **Use `bench/serve.py`, not `python -m http.server`.** The stdlib server sends no
   `Cache-Control`, so Chrome caches the ES modules and the Worker script.
   Editing `vm-worker.js` and reloading then silently runs the OLD code. An hour
   went into debugging a "bug" that had simply never been loaded; the giveaway

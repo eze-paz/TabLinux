@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the working tree into a shim dir jit-vm-test.js can load.
+# Build the working tree into a shim dir bench/jit-vm-test.js can load.
 #
 # `set -e` alone is not enough here: wasm-bindgen will happily run on the
 # PREVIOUS artifact if cargo failed, and the script then prints success while

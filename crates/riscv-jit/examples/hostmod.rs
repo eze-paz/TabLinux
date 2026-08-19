@@ -19,7 +19,7 @@ use wasm_encoder::{
     Instruction as W, MemArg, MemoryType, Module, TypeSection, ValType,
 };
 
-/// Must match jit-difftest.js and jit-multi.js.
+/// Must match bench/jit-difftest.js and bench/jit-multi.js.
 const MEM_BASE: u64 = 16384;
 const MEM_BYTES: i32 = 4096;
 

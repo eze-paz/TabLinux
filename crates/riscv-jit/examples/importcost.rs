@@ -14,7 +14,7 @@
 //! Build (2) only if (1) is too slow. This emits both shapes so the difference
 //! can be measured instead of assumed.
 //!
-//!   cargo run --release -p riscv-jit --example importcost && node jit-import.js
+//!   cargo run --release -p riscv-jit --example importcost && node bench/jit-import.js
 
 use wasm_encoder::{
     CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
@@ -153,5 +153,5 @@ fn main() {
     std::fs::write("/tmp/imp_call.wasm", via_import()).unwrap();
     std::fs::write("/tmp/imp_inline.wasm", inline_loads()).unwrap();
     eprintln!("wrote /tmp/imp_call.wasm and /tmp/imp_inline.wasm ({N} accesses each)");
-    eprintln!("now run: node jit-import.js");
+    eprintln!("now run: node bench/jit-import.js");
 }

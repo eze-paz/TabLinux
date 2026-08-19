@@ -54,13 +54,13 @@ git stash && cargo build --release -p riscv-machine --example bench \
 
 `bench user` cannot see kernel-path changes at all — it runs `yes(1)`, so the
 guest never leaves userspace. Everything left to optimise lives on kernel paths,
-which is what `bench boot` and `boot-ab.py` are for.
+which is what `bench boot` and `bench/boot-ab.py` are for.
 
 A boot is **not homogeneous** — decompression, device probe and page-fault
 storms run at genuinely different speeds — so the top-5% estimator is invalid on
 it and reported a 17.9% spread when first tried. A boot is instead
 **deterministic**: slice `i` executes the identical instruction sequence in both
-builds. So `bench boot` writes one row per slice and `boot-ab.py` compares slice
+builds. So `bench boot` writes one row per slice and `bench/boot-ab.py` compares slice
 `i` to slice `i`, taking the median of ~563 paired ratios. Interference inflates
 individual slices in one run or the other; the median does not care.
 
@@ -82,7 +82,7 @@ core split (all twelve WSL vCPUs benchmark at 17–19 MIPS; `taskset` lowers
 throughput rather than stabilising it). The residue is the Windows host
 scheduling the VM's vCPUs, which is not observable from inside the VM.
 
-So `boot-ab.py` refuses to call anything inside ±12% a win, however tight the
+So `bench/boot-ab.py` refuses to call anything inside ±12% a win, however tight the
 interval looks. It can **confirm a large change** — it reads the decode cache at
 1.29x — and **cannot adjudicate a small one**.
 
@@ -94,7 +94,7 @@ a single null pair that happened to come out at 1.000x. One sample is not a
 validation.
 
 A boot is ~1.2G instructions and takes minutes, so this is the confirmation
-instrument. Iterate on `bench user`, confirm on `boot-ab.py`.
+instrument. Iterate on `bench user`, confirm on `bench/boot-ab.py`.
 
 ## What has been done
 
@@ -200,7 +200,7 @@ cargo test --release -p riscv-harness --test boot_to_userspace # step count
 cargo test --release -p riscv-machine --test snapshot          # determinism
 ```
 
-`boot-ab.py` also warns if the two runs produced different slice counts, which
+`bench/boot-ab.py` also warns if the two runs produced different slice counts, which
 means the instruction stream diverged — the pairing is then meaningless and the
 ratio must not be believed.
 

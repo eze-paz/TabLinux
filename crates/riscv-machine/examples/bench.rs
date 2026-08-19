@@ -39,7 +39,7 @@
 //! *phase*, not the quietest *window*, and that estimator reported a 17.9%
 //! spread on it. What a boot is instead is **deterministic**: two builds execute
 //! the same instruction sequence, so slice `i` does identical work in both.
-//! `boot` therefore writes one row per slice and boot-ab.py compares them
+//! `boot` therefore writes one row per slice and bench/boot-ab.py compares them
 //! pairwise, taking the median of the per-slice speedup ratios. Interference
 //! inflates individual slices in one run or the other; a median over hundreds of
 //! paired ratios does not care.
@@ -310,7 +310,7 @@ fn boot(root: &str, csv: Option<String>) {
     // Total CPU time over a deterministic instruction sequence is directly
     // comparable between builds. It is the honest headline for a single run,
     // but it swallows every hiccup the host had, so it is the coarse view;
-    // boot-ab.py's paired median is the sensitive one.
+    // bench/boot-ab.py's paired median is the sensitive one.
     println!(
         "boot: {} Msteps in {:.1}s cpu ({:.2} MIPS overall)",
         total_steps / 1_000_000,
@@ -321,7 +321,7 @@ fn boot(root: &str, csv: Option<String>) {
 
     // No MIPS headline here on purpose: averaging the fast end of a
     // heterogeneous workload measures which phase is fastest, not how fast the
-    // emulator is. Use boot-ab.py.
+    // emulator is. Use bench/boot-ab.py.
     if let Some(path) = csv {
         let mut out = String::from("slice,steps,cpu_secs\n");
         for (i, (steps, secs)) in rows.iter().enumerate() {

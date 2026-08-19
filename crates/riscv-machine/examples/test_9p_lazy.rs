@@ -68,10 +68,10 @@ fn main() {
         // Build a small tree to serve.
         let base = "/tmp/p9lazy".to_string();
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(format!("{base}/sandpie/conversations")).unwrap();
+        std::fs::create_dir_all(format!("{base}/shared/files")).unwrap();
         std::fs::write(format!("{base}/README"), b"lazy 9p host root\n").unwrap();
         std::fs::write(
-            format!("{base}/sandpie/conversations/first.md"),
+            format!("{base}/shared/files/first.md"),
             b"# hello from a lazily-faulted file\nthis text lives only on the host\n",
         )
         .unwrap();
@@ -158,12 +158,12 @@ fn main() {
         "mount -t 9p -o trans=virtio,version=9p2000.L,msize=131072 shared /files 2>&1\n",
         "echo MOUNTED $?\n",
         "echo --- LS ROOT ---; ls -la /files 2>&1\n",
-        "echo --- LS SUB ---; ls -la /files/sandpie/conversations 2>&1\n",
-        "echo --- CAT ---; cat /files/sandpie/conversations/first.md 2>&1\n",
+        "echo --- LS SUB ---; ls -la /files/shared/files 2>&1\n",
+        "echo --- CAT ---; cat /files/shared/files/first.md 2>&1\n",
         // Write-back exercises: create+write, mkdir, and delete.
-        "echo guest-authored > /files/sandpie/conversations/reply.txt 2>&1\n",
+        "echo guest-authored > /files/shared/files/reply.txt 2>&1\n",
         "mkdir /files/newdir 2>&1\n",
-        "rm /files/sandpie/conversations/first.md 2>&1\n",
+        "rm /files/shared/files/first.md 2>&1\n",
         "echo ===9P_DONE===\n",
     );
     m.console_input(script.as_bytes());
@@ -190,15 +190,15 @@ fn main() {
     }
 
     let ok_mount = console.contains("MOUNTED 0");
-    let ok_ls = console.contains("sandpie");
+    let ok_ls = console.contains("shared");
     let ok_sub = console.contains("first.md");
     let ok_cat = console.contains("lazily-faulted file");
     // Write-back: the host tree should now reflect the guest's mutations.
-    let wrote = std::fs::read_to_string(format!("{host_root}/sandpie/conversations/reply.txt"))
+    let wrote = std::fs::read_to_string(format!("{host_root}/shared/files/reply.txt"))
         .map(|s| s.contains("guest-authored"))
         .unwrap_or(false);
     let mkdired = std::path::Path::new(&format!("{host_root}/newdir")).is_dir();
-    let deleted = !std::path::Path::new(&format!("{host_root}/sandpie/conversations/first.md")).exists();
+    let deleted = !std::path::Path::new(&format!("{host_root}/shared/files/first.md")).exists();
     eprintln!("mount:{ok_mount} ls:{ok_ls} sub:{ok_sub} cat:{ok_cat}");
     eprintln!("write-back  write:{wrote} mkdir:{mkdired} delete:{deleted}");
     assert!(ok_mount, "lazy 9p mount failed");

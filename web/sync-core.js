@@ -1,14 +1,14 @@
 // Minimal Dropbox sync engine for the VM page — enough to push the guest's
 // file changes to Dropbox and to hydrate cloud-only files on demand, WITHOUT a
-// sandpie app tab open.
+// host app tab open.
 //
-// It reuses the sandpie app's exact transport patterns (modules/dropbox.js):
+// It reuses the host app's exact transport patterns (modules/dropbox.js):
 // direct CORS fetches to Dropbox (no proxy — dbxRoute there is identity), PKCE
 // refresh tokens from localStorage, the `\uXXXX` Dropbox-API-Arg escaping, the
 // get-temporary-link download path that survives COOP/COEP, and the same
 // localStorage bookkeeping keys — so a value it writes (sync-state, cloud-index)
 // is read back consistently by the app. Host I/O (OPFS) is injected so this can
-// later move into sandpie's modules/ and be shared by dropbox.js (de-dup),
+// later move into the host app's modules/ and be shared by dropbox.js (de-dup),
 // which is the clean follow-up to this VM-local first cut.
 
 const TOKENS_KEY = "dbxfull-tokens";
@@ -207,7 +207,7 @@ export function createSyncCore(host) {
     }
 
     // Answer the service worker's hydrate request so `/files/<rel>` content
-    // faults in with no sandpie app tab — this page is a window client too.
+    // faults in with no host app tab — this page is a window client too.
     function wireServiceWorker() {
         if (!("serviceWorker" in navigator)) return;
         navigator.serviceWorker.addEventListener("message", ev => {

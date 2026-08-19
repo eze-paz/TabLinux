@@ -2,7 +2,7 @@
 //!
 //! Generates pseudo-random straight-line programs from the compilable subset,
 //! runs each through the interpreter, emits the wasm, and writes the modules
-//! plus the expected end state to /tmp. `jit-difftest.js` executes them under
+//! plus the expected end state to /tmp. `bench/jit-difftest.js` executes them under
 //! Node — V8, the same engine the browser uses — and compares.
 //!
 //! This exists because the JIT's failure mode is silent. A miscompiled shift, a
@@ -18,7 +18,7 @@
 //! checksum rather than shipping 4 KiB per case.
 //!
 //!   cargo run --release -p riscv-jit --example difftest
-//!   node jit-difftest.js
+//!   node bench/jit-difftest.js
 
 use riscv_core::execute::{Bus, Cpu};
 use riscv_core::types::Instr;
@@ -227,7 +227,7 @@ fn random_instr(r: &mut Rng) -> Instr {
 const BLOCK_PC: u64 = 0x8000_1234;
 
 /// Where the compiled blocks find the f-register file and the FS word. The
-/// JS side (jitenv.js) uses the same constants; blocks bake them in, so the
+/// JS side (bench/jitenv.js) uses the same constants; blocks bake them in, so the
 /// two must agree or every FP case reads garbage.
 const FREGS_BASE: u32 = 8192;
 const FS_WORD: u32 = 8448;
@@ -403,7 +403,7 @@ fn main() {
     std::fs::write("/tmp/jit_table.wasm", &tbl).unwrap();
 
     // A short block too: real basic blocks are short, so block entry cost
-    // matters as much as the code inside. jit-bench.js backs it out of the two.
+    // matters as much as the code inside. bench/jit-bench.js backs it out of the two.
     let short: Vec<(Instr, u8, i32)> = (0..3)
         .map(|k| (random_instr(&mut r), 4u8, (k * 4) as i32))
         .collect();
@@ -411,5 +411,5 @@ fn main() {
     std::fs::write("/tmp/jit_short.wasm", &w).unwrap();
 
     eprintln!("wrote {cases} cases to /tmp/jit_cases.json + /tmp/jit_case_N.wasm");
-    eprintln!("now run: node jit-difftest.js");
+    eprintln!("now run: node bench/jit-difftest.js");
 }

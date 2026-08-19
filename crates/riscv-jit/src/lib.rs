@@ -692,7 +692,7 @@ const TAILLINK_ON: bool = false;
 /// reg-file traffic is ~2.2 memory ops per compiled instruction, most of it
 /// redundant reloads this removes.
 ///
-/// RESULT (2026-08-17, shell md5sum, mips.js/jit-fast-ab): NULL. Correct
+/// RESULT (2026-08-17, shell md5sum, bench/mips.js/jit-fast-ab): NULL. Correct
 /// (difftest 412/412 both import impls; full interp-vs-JIT output identical over
 /// 400M insns) and it cuts EMITTED reg loads from 1.60 to 0.70 per compiled
 /// instruction (−56%), yet the A/B is +0.5% ±3.6% vs a 3.8% null -- no

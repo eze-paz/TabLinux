@@ -67,7 +67,7 @@ const post = (msg, transfer) => {
 // Hand the lazy-9p worker the dehydrated-Dropbox cloud index. It lives in this
 // origin's localStorage, which the page can read but a Worker cannot, and it is
 // how cloud-only placeholders (files present in Dropbox but not yet in OPFS)
-// appear in the guest's directory listings. Same key sandpie's own sync uses.
+// appear in the guest's directory listings. Same key the host app's own sync uses.
 // Harmless when absent (no Dropbox / not dehydrated) — the worker just sees
 // null and lists local entries only.
 try {
@@ -349,7 +349,7 @@ async function opfsFileHandle(rel) {
 }
 
 // Bring up the Dropbox sync engine on this page. It gives the VM two things a
-// sandpie app tab used to be required for: pushing guest changes to Dropbox
+// host app tab used to be required for: pushing guest changes to Dropbox
 // (via window.__spSyncNotify, which the write-back path calls) and answering the
 // service worker's hydrate requests so cloud-only file *content* faults in on
 // read. Only when Dropbox is actually connected — otherwise the VM stays
