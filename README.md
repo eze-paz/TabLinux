@@ -1,10 +1,10 @@
-# rusty-riscv
+# TabLinux
 
-A **RISC-V (RV64GC) Linux virtual machine that runs in the browser**, written in
-Rust, with a hand-written **RISC-V → WebAssembly block JIT**. It boots a real
-Alpine Linux userspace and runs unmodified `riscv64` binaries — CPython, busybox,
-`apk`, and more — at JIT speed. No server does the emulation, no plugins: it's
-entirely client-side WebAssembly.
+**A Linux virtual machine that runs in your browser tab** — a RISC-V (RV64GC)
+emulator written in Rust with a hand-written **RISC-V → WebAssembly block JIT**.
+It boots a real Alpine Linux userspace and runs unmodified `riscv64` binaries —
+CPython, busybox, `apk`, and more — at JIT speed. No server does the emulation,
+no plugins, no install: it's entirely client-side WebAssembly in one tab.
 
 Most in-browser RISC-V emulators are interpreters. This one **compiles hot guest
 code to WebAssembly at runtime and tail-calls between the compiled blocks**,
