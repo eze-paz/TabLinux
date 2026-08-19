@@ -14,9 +14,9 @@ user experience, where order-of-magnitude swings demonstrably live (the 5s ->
 40-50s restore regression was one). No ceiling claim survives until an
 end-to-end browser-path harness exists.
 
-Rules of evidence are in speed.md and jit-plan.md and still apply: the box has
-1.75x run-to-run spread, so nothing counts except `jit-ab.py` /
-`boot-ab.py` interleaved medians, and anything under ~15% is unresolvable here.
+Rules of evidence are in speed.md and still apply: the box has
+1.75x run-to-run spread, so nothing counts except `bench/jit-ab.py` /
+`bench/boot-ab.py` interleaved medians, and anything under ~15% is unresolvable here.
 For guest-side items the metric is wall clock to a marker (shell prompt, `apk
 add` completion), not MIPS — a change that halves retired instructions halves
 MIPS at constant wall time and is still a win.
@@ -33,7 +33,7 @@ byte-identical cold boot:
 
 Instrumentation added: `chain_miss` (why chains stop), `tlb_miss` (why the
 inlined TLB probe misses), `gen_bump` (what moved the generation word),
-`chain-sweep.js`, `tlbprobe.js`, and `jit-fast-ab.js` -- a 100-second A/B
+`bench/chain-sweep.js`, `bench/tlbprobe.js`, and `bench/jit-fast-ab.js` -- a 100-second A/B
 resolving ~2.8%, replacing the 40-minute one that could not resolve 15%.
 
 **What measurement killed, before any of it was built:**
@@ -44,7 +44,7 @@ resolving ~2.8%, replacing the 40-minute one that could not resolve 15%.
   and a privilege transition traps out through uncompilable code, so no
   compiled block ever probes across the boundary.
 - **Privilege killing the inlined TLB: dead** (0.3% of misses, now 1.0%).
-  `tlbcount.py` carried this suspicion; it can be retired.
+  `bench/tlbcount.py` carried this suspicion; it can be retired.
 - **Chain-boundary overhead: closed.** Halving boundary crossings bought
   2%, so removing them entirely could not reach 4%. Megablocks are worth
   less than the plan assumed -- they now have to justify themselves on
@@ -78,7 +78,7 @@ a one-constant experiment), everything else under 1.5%.
 - [ ] **Merge hot chains into single functions (megablocks v1).** Cheaper
   variant of the above without loop re-entry: a chain that always runs
   A→B→C becomes one function, killing per-hop probe/count/PC writes. Also
-  amortizes TurboFan tier-up (module churn note in jit-plan).
+  amortizes TurboFan tier-up (module churn note in speed.md).
 - [ ] **Same-page TLB probe reuse.** Every load/store emits a full probe
   (~12–15 wasm ops + 2 loads). Stack traffic hits one page repeatedly; within
   a block, cache the last (page, host_base) per base register and skip the
@@ -191,7 +191,7 @@ a one-constant experiment), everything else under 1.5%.
 
 ## Closed — do not retry without new evidence
 
-Carried from jit-plan.md / the levers record so this file is self-contained:
+Carried from the levers record so this file is self-contained:
 
 - Registers in wasm locals: **4 attempts, 4 negatives**, TurboFan tier-up
   confirmed reached — the allocator already does this better.

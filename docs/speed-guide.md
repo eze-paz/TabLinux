@@ -25,10 +25,10 @@ it encodes mistakes this project has already paid for.
 ```bash
 # Native tests build themselves. The JIT harnesses need the wasm host:
 ./build-jitnode.sh            # -> /tmp/jitnode  (refuses stale artifacts)
-./build-wasm.sh               # -> web/pkg       (the BROWSER build — not what jit-vm-test.js loads!)
+./build-wasm.sh               # -> web/pkg       (the BROWSER build — not what bench/jit-vm-test.js loads!)
 ```
 
-**`jit-vm-test.js` loads `/tmp/jitnode`.** Building `web/pkg` and then
+**`bench/jit-vm-test.js` loads `/tmp/jitnode`.** Building `web/pkg` and then
 benchmarking measures the *previous* build and it will look plausible. This
 has happened; `build-jitnode.sh` exists because of it.
 
@@ -38,10 +38,10 @@ has happened; `build-jitnode.sh` exists because of it.
 cargo test --release -p riscv-harness --test isa_suite          # must be 134/134
 cargo test --release -p riscv-harness --test boot_to_userspace  # userspace at step 567,856,066 EXACTLY
 cargo test --release -p riscv-machine --test snapshot           # determinism
-node jit-difftest.js          # 400 randomized cases vs interpreter: 400/400
-node jit-vm-test.js           # snapshot boot, console diffed vs interpreter
-node jit-coldboot-test.js     # COLD boot, byte-identical console vs interpreter
-node jit-restore-repro.js     # the rw-mount interrupt-delivery repro: all steps responsive
+node bench/jit-difftest.js          # 400 randomized cases vs interpreter: 400/400
+node bench/jit-vm-test.js           # snapshot boot, console diffed vs interpreter
+node bench/jit-coldboot-test.js     # COLD boot, byte-identical console vs interpreter
+node bench/jit-restore-repro.js     # the rw-mount interrupt-delivery repro: all steps responsive
 ```
 
 Notes that have each independently saved or cost a day:
@@ -49,7 +49,7 @@ Notes that have each independently saved or cost a day:
   speed. It is a failure until explained.
 - The snapshot harnesses resume a booted guest. Three real bugs (fence.i
   flush, missing interrupt delivery, atomics sign-extension) were invisible to
-  them and caught only by `jit-coldboot-test.js` or the difftest. Never skip
+  them and caught only by `bench/jit-coldboot-test.js` or the difftest. Never skip
   the cold boot.
 - If you add a new instruction to codegen, extend the difftest *generator* to
   emit it, and confirm via generated-module byte size that it actually does.
@@ -106,7 +106,7 @@ browser-context, end-to-end timing of the deployed page's real paths — snapsho
 restore to interactive prompt, cold boot to prompt, and a scripted interactive
 workload — run before and after every change that ships.
 
-### Performance measurement — use jit-fast-ab.js
+### Performance measurement — use bench/jit-fast-ab.js
 
 **(Deficient — see the postmortem above. Kept for the mechanics of running it,
 not as a shipping gate. Its verdicts describe a synthetic Node workload only.)**
@@ -114,15 +114,15 @@ not as a shipping gate. Its verdicts describe a synthetic Node workload only.)**
 ```bash
 ./build-jitnode.sh /tmp/jitnode_new
 git stash && ./build-jitnode.sh /tmp/jitnode_old && git stash pop
-node jit-fast-ab.js --null      # validate the instrument FIRST
-node jit-fast-ab.js             # the measurement
+node bench/jit-fast-ab.js --null      # validate the instrument FIRST
+node bench/jit-fast-ab.js             # the measurement
 ```
 
 **Resolution ~2.8%, runtime ~100 seconds, null bias 0.31%.** Run it twice
 and check the two medians agree; two independent runs beat one long one,
 because they resample the host's mood as well as the guest's.
 
-`jit-ab.py` is superseded. It took 40 minutes to return a number that
+`bench/jit-ab.py` is superseded. It took 40 minutes to return a number that
 disagreed with itself -- the first two pairs of one run were 0.838 and
 1.091 -- because it booted the interpreter for 78s per run to produce a
 correctness reference it then used to measure 6s of JIT, and compared
@@ -144,7 +144,7 @@ Things that instrument taught, which apply to any measurement here:
   one.** Sanity-check the interval against the spread: with n samples the
   CI of the median cannot be much tighter than sigma/sqrt(n).
 - **Deterministic counters beat timing whenever they can answer the
-  question.** `chain-sweep.js` and `tlbprobe.js` decide whether a lever
+  question.** `bench/chain-sweep.js` and `bench/tlbprobe.js` decide whether a lever
   is worth an A/B at all, in one run, with no statistics.
 - **Suspiciously unchanged numbers are a bug signal.** A real no-op moves
   counters a little; *identical* counts meant a patch had silently not
@@ -154,7 +154,7 @@ Things that instrument taught, which apply to any measurement here:
 
 `Machine::interp_hist` (`riscv-machine/src/lib.rs:53`, gated by
 `interp_hist_on`) bins every interpreted instruction by *why* it was
-interpreted; `jit-vm-test.js` prints share-of-wall per bin. The split that
+interpreted; `bench/jit-vm-test.js` prints share-of-wall per bin. The split that
 matters is **uncompilable vs merely cold** — codegen fixes the first, nothing
 fixes the second. When a lever claims to move a bin, print the histogram
 before and after; that is deterministic and immune to the noise problem.
@@ -162,10 +162,10 @@ before and after; that is deterministic and immune to the noise problem.
 ### Definition of done, per lever
 
 1. Test battery green, including cold boot.
-2. `jit-fast-ab.js` median clearing its own reported CI (typically ~3%), or
+2. `bench/jit-fast-ab.js` median clearing its own reported CI (typically ~3%), or
    a wall-clock win for Tier 3, or an explicit "not proven" record. The old
    >=1.15 bar was a property of the old instrument and no longer applies.
-3. A short section appended to jit-plan.md or this file recording the result —
+3. A short section appended to this file recording the result —
    *especially* negatives. The closed-levers list is the most valuable part of
    this project's docs.
 4. Committed locally. **Do not push** — the remote embeds a credential; the
@@ -176,7 +176,7 @@ before and after; that is deterministic and immune to the noise problem.
 ## Stage-2 result (2026-08-10): compiled cost per instruction class
 
 Measured in-situ: pure-class guest loops (tools/classbench/gen.py, hand-wrapped
-static ELFs, no relocations) run inside the restored VM via classbench.js, timed
+static ELFs, no relocations) run inside the restored VM via bench/classbench.js, timed
 between shell-computed markers, instruction counts exact from the step counter.
 Two runs; absolutes swing ~25% with the box, the ranking does not.
 
@@ -287,7 +287,7 @@ or a different execution substrate entirely.
 QEMU caches indirect-branch targets; we pay a full chain probe on every jalr
 (the priciest class, ~3.3x alu in the microbench). Measured on a call-heavy
 workload (fork/exec + ls + md5sum + grep, 26M instructions, interpreter so the
-count is exact; instruction MIX is identical JIT-on-or-off). jalrbench.js;
+count is exact; instruction MIX is identical JIT-on-or-off). bench/jalrbench.js;
 engine scaffolding was reverted, so re-apply it to reproduce.
 
   jalr executed        2.84% of all instructions
@@ -330,7 +330,7 @@ Tier 2's ASID work. Do not build either on the current guess.
 `riscv-machine/src/jit.rs` (Rust side) — probes, hits, misses split by
 "key mismatch (evicted)" vs "gen mismatch"; for gen mismatches, record whether
 the stored gen differs in the priv bits, the trans_gen bits, or both. Gate
-behind the existing `interp_hist_on` style flag; print from `jit-vm-test.js`
+behind the existing `interp_hist_on` style flag; print from `bench/jit-vm-test.js`
 next to the histogram.
 
 **Test:** counters change nothing architectural — battery must be green and
@@ -356,7 +356,7 @@ remove privilege from the validity check.
 
 **Pitfalls:** the Rust-side insert (jit.rs) and the wasm-side probe must
 compute identical indices or chains silently never hit (symptom: MIPS drops to
-interpreter-with-blocks levels, ~40). Assert hit-rate in `jit-vm-test.js`
+interpreter-with-blocks levels, ~40). Assert hit-rate in `bench/jit-vm-test.js`
 output before benchmarking.
 
 **Test:** battery; then ABBA. **Accept ≥1.15; expect the win on the apk
@@ -389,14 +389,14 @@ riscv-jit/src/lib.rs.
 - `fence.i`/uncompilable instructions still terminate traces — merging never
   crosses them.
 - Self-modifying code: merged blocks are still keyed and flushed by
-  `icache_gen`; verify with `jit-coldboot-test.js`, which exists precisely
+  `icache_gen`; verify with `bench/jit-coldboot-test.js`, which exists precisely
   because alternatives-patching rewrites kernel text.
 - Watch `JIT_CACHE_MAX` pressure: merged functions are bigger; check the
   discard counter doesn't start cycling (the 45608ed collapse was a discard
   bug — reread that commit before touching cache lifecycle).
 
 **Test:** battery, then ABBA on both boot and apk. Also print insns/chain and
-block-entry counts (already in jit-vm-test.js output): entries should drop
+block-entry counts (already in bench/jit-vm-test.js output): entries should drop
 sharply; if they don't, merging isn't firing — fix that before benchmarking.
 
 **Accept ≥1.15.** This is the biggest item in the file; budget accordingly,
@@ -464,7 +464,7 @@ must never be false when the real check would deliver — write that as a
 comment and a debug assertion (`debug_assert!(pre || !full)`) and run a boot
 with debug assertions on.
 
-**Test:** battery — jit-restore-repro.js is the one that matters (it is the
+**Test:** battery — bench/jit-restore-repro.js is the one that matters (it is the
 regression test for exactly this path). ABBA target: the 1ebbf13 record says
 the check costs ~10-15%, so recovering it should just clear the bar.
 
@@ -548,7 +548,7 @@ half only pays on inline-TLB misses. Do the Rust half first (simpler,
 validates the masking logic), the wasm half second.
 
 **Test:** battery. Add a walk counter (walks per 1M insns) printed by
-jit-vm-test.js — it should drop hard on kernel-heavy phases even if MIPS moves
+bench/jit-vm-test.js — it should drop hard on kernel-heavy phases even if MIPS moves
 less than 15%. Accept on ABBA, or on walk-count + not-proven-but-simplifying
 grounds if it's a wash.
 
@@ -668,7 +668,7 @@ measured target sits unattempted, except 4.1 which is independent of MIPS
 ### 4.1 Persistent JIT cache (IndexedDB)
 
 **Where:** browser side only — web/ worker; the wasm module cache lives in
-the JS host (jit-dispatch.js / the worker's module registry). V8 allows
+the JS host (bench/jit-dispatch.js / the worker's module registry). V8 allows
 structured-cloning `WebAssembly.Module` into IndexedDB.
 
 **Do:** key = hash of (guest physical code bytes the block was compiled from,
@@ -730,12 +730,12 @@ of the original JIT, plan accordingly.
 ## Appendix: pre-flight checklist for any lever
 
 ```
-[ ] Read the relevant "closed" entries in jit-plan.md + speed-checklist.md
-[ ] Baseline: build-jitnode.sh, one jit-vm-test.js run, save the histogram
+[ ] Read the relevant "closed" entries in speed-checklist.md
+[ ] Baseline: build-jitnode.sh, one bench/jit-vm-test.js run, save the histogram
 [ ] Branch from master; one lever per branch
 [ ] Implement behind a revert flag when cheap (pattern: __noXyz on the wasm host)
 [ ] Battery green, cold boot included; difftest generator extended if codegen changed
-[ ] ABBA (jit-ab.py 4) or wall-clock ABBA for Tier 3 — nothing else counts
+[ ] ABBA (bench/jit-ab.py 4) or wall-clock ABBA for Tier 3 — nothing else counts
 [ ] Record the result in docs, wins AND losses, with the numbers
 [ ] Commit locally; do not push; do not touch web/pkg unless shipping to the page
 ```
