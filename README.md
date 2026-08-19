@@ -11,9 +11,12 @@ code to WebAssembly at runtime and tail-calls between the compiled blocks**,
 which is where the interesting engineering lives.
 
 > **Try it live:** <https://eze-paz.github.io/TabLinux/> — boots Alpine in your
-> browser tab. No install, no server. (Networking needs a WISP relay; a free
-> public one can be enabled with `?wisp=wss://wisp.mercurywork.shop/`, or run
-> your own — see [Networking](#networking-wisp).)
+> browser tab. No install, no server. The VM itself is fully client-side;
+> outbound networking needs a WISP relay of your own — a third-party public
+> relay is not recommended (operator terms are demo-only, the protocol's ping
+> extension is private, and relay traffic is visible to its operator). Run
+> your own with `node scripts/wisp-standalone.mjs`, see
+> [Networking](#networking-wisp).
 
 ---
 
