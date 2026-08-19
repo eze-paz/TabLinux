@@ -12,11 +12,11 @@
 // uses fetch(), and keeping it out of the worker means the VM never blocks on
 // the network stack and vice versa.
 
-import init, { Vm } from "./pkg/riscv_wasm.js";
+import init, { Vm } from "./pkg/riscv_wasm.js?v=2";
 // The raw wasm exports: the JIT needs the linear memory, the indirect
 // function table, and the load*/store* that generated blocks import.
 // wasm-bindgen keeps these module-private, so build.sh appends an export.
-import { __wasm } from "./pkg/riscv_wasm.js";
+import { __wasm } from "./pkg/riscv_wasm.js?v=2";
 // Cross-session compiled-block cache (?jitcache). Content-addressed by the
 // module's own wasm bytes, so reusing a cached module is correct by construction.
 import { jitCacheInit, jitCacheGet, jitCachePut, jitCacheStats } from "./jit-cache.js";
