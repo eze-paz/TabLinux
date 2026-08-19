@@ -5,15 +5,353 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TabLinux — Linux VM in your browser tab</title>
 <meta name="description" content="TabLinux: a RISC-V Linux virtual machine that runs entirely in your browser tab — no install, no server. JIT-compiled WebAssembly.">
-<meta http-equiv="refresh" content="0; url=web/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  body { font-family: system-ui, sans-serif; background: #0d1117; color: #e6edf3;
-         display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-  a { color: #58a6ff; }
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111118;
+    --border: #1e1e28;
+    --fg: #e0e0e8;
+    --dim: #6b7280;
+    --accent: #4e9a06;
+    --accent-glow: rgba(78, 154, 6, 0.35);
+    --term-bg: #0c0c0c;
+    --term-fg: #d0d0d0;
+    --term-green: #4e9a06;
+    --term-blue: #3465a4;
+    --term-yellow: #c4a000;
+    --term-red: #cc0000;
+    --term-cyan: #06989a;
+    --term-dim: #6b7280;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 40px 24px;
+    gap: 0;
+  }
+
+  /* ── Ambient glow ── */
+  body::before {
+    content: '';
+    position: fixed;
+    top: -20%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 800px;
+    height: 600px;
+    background: radial-gradient(ellipse at center, var(--accent-glow) 0%, transparent 60%);
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 36px;
+    width: 100%;
+    max-width: 720px;
+  }
+
+  /* ── Eyebrow ── */
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .eyebrow::before, .eyebrow::after {
+    content: '';
+    width: 32px;
+    height: 1px;
+    background: var(--accent);
+    opacity: 0.4;
+  }
+
+  /* ── Headline ── */
+  h1 {
+    font-size: clamp(28px, 5vw, 42px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    text-align: center;
+    line-height: 1.15;
+  }
+  h1 .accent { color: var(--accent); }
+
+  .sub {
+    font-size: 15px;
+    color: var(--dim);
+    text-align: center;
+    max-width: 480px;
+    line-height: 1.5;
+  }
+
+  /* ── Demo button ── */
+  .demo-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 32px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #0a0a0a;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 0 0 0 var(--accent-glow);
+    position: relative;
+  }
+  .demo-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 30px var(--accent-glow);
+  }
+  .demo-btn:active { transform: translateY(0); }
+  .demo-btn .arrow {
+    display: inline-block;
+    transition: transform 0.15s ease;
+  }
+  .demo-btn:hover .arrow { transform: translateX(3px); }
+
+  /* ── Terminal window ── */
+  .terminal {
+    width: 100%;
+    background: var(--term-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+  }
+  .term-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: #16161e;
+    border-bottom: 1px solid var(--border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .term-dots { display: flex; gap: 6px; }
+  .term-dots span {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #2a2a35;
+  }
+  .term-title { margin-left: 8px; }
+  .term-stat { margin-left: auto; color: var(--accent); }
+
+  .term-body {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--term-fg);
+    padding: 16px 18px;
+    height: 380px;
+    overflow-y: auto;
+    scrollbar-width: none;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .term-body::-webkit-scrollbar { display: none; }
+  .term-body .c-green { color: var(--term-green); }
+  .term-body .c-blue { color: var(--term-blue); }
+  .term-body .c-yellow { color: var(--term-yellow); }
+  .term-body .c-red { color: var(--term-red); }
+  .term-body .c-cyan { color: var(--term-cyan); }
+  .term-body .c-dim { color: var(--term-dim); }
+  .term-body .c-bold { font-weight: 700; }
+
+  .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 15px;
+    background: var(--term-fg);
+    vertical-align: text-bottom;
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cursor { animation: none; }
+    .demo-btn { transition: none; }
+  }
+
+  @media (max-width: 520px) {
+    .term-body { font-size: 11px; height: 280px; padding: 12px; }
+    .container { gap: 28px; }
+  }
 </style>
 </head>
 <body>
-<p>Loading TabLinux… if nothing happens, <a href="web/">open the VM directly</a>.</p>
-<script>location.replace("web/" + location.search);</script>
+<div class="container">
+
+  <div class="eyebrow">RISC-V · WebAssembly · JIT</div>
+
+  <h1>Linux in your browser tab.<br><span class="accent">No server. No install.</span></h1>
+
+  <p class="sub">A RISC-V Linux VM compiled to WebAssembly at runtime with a hand-written block JIT. Boots Alpine, runs unmodified riscv64 binaries.</p>
+
+  <a class="demo-btn" href="web/" id="demoBtn">
+    Launch demo
+    <span class="arrow">→</span>
+  </a>
+
+  <div class="terminal">
+    <div class="term-bar">
+      <div class="term-dots"><span></span><span></span><span></span></div>
+      <span class="term-title">tablinux — alpine-riscv64</span>
+      <span class="term-stat" id="mips">●</span>
+    </div>
+    <div class="term-body" id="term"></div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  const term = document.getElementById('term');
+  const mipsEl = document.getElementById('mips');
+
+  // Each line is either null (blank line) or an array of [text, className] segments.
+  const lines = [
+    // OpenSBI
+    [['OpenSBI v1.4 ', 'c-green'], ['(riscv-vm)', 'c-dim']],
+    [['Platform Base ISA', 'c-dim'], [' = ', 'c-dim'], ['rv64imafdcb', 'c-yellow']],
+    [['Machine Mode', 'c-dim'], [' = ', 'c-dim'], ['1', 'c-yellow']],
+    [['SBI Implementation', 'c-dim'], [' = ', 'c-dim'], ['RustSBI', 'c-green']],
+    [['SBI Specification Version', 'c-dim'], [' = ', 'c-dim'], ['2.0', 'c-yellow']],
+    null,
+    // Kernel boot
+    [['BOOT', 'c-green'], ['  Linux version 6.18.35 ', 'c-bold'], ['(riscv64) ', 'c-dim'], ['Alpine', 'c-cyan']],
+    [['Command line: ', 'c-dim'], ['console=ttyS0 root=/dev/vda', 'c-yellow']],
+    [['SMP: ', 'c-dim'], ['1', 'c-yellow'], [' CPU', 'c-dim']],
+    [['Memory: ', 'c-dim'], ['256M', 'c-yellow'], [' available', 'c-dim']],
+    [['riscv,plic0: ', 'c-dim'], ['interrupt-controller', 'c-cyan']],
+    [['Serial: 8250/16550 driver', 'c-dim']],
+    null,
+    // Alpine login
+    [['Welcome to ', 'c-dim'], ['Alpine Linux 3.22', 'c-green'], [' (riscv64)', 'c-dim']],
+    null,
+    [['  Welcome to Alpine Linux 3.22', 'c-green']],
+    [['  Kernel ', 'c-dim'], ['6.18.35', 'c-yellow'], [' on ', 'c-dim'], ['riscv64', 'c-cyan'], [' (ttyS0)', 'c-dim']],
+    null,
+    [['localhost login: ', 'c-bold'], ['root', 'c-yellow']],
+    [['Welcome to Alpine!', 'c-green']],
+    null,
+    // Interactive
+    [['localhost:~# ', 'c-green'], ['uname -a', '']],
+    [['Linux localhost 6.18.35 #1 SMP riscv64 GNU/Linux', 'c-dim']],
+    null,
+    [['localhost:~# ', 'c-green'], ['apk add python3', '']],
+    [['(1/3) Installing python3', 'c-dim']],
+    [['(2/3) Installing py3-pip', 'c-dim']],
+    [['(3/3) Installing python3-dev', 'c-dim']],
+    [['OK: ', 'c-green'], ['8 MiB installed', 'c-dim']],
+    null,
+    [['localhost:~# ', 'c-green'], ['python3 -c "print(2**128)"', '']],
+    [['340282366920938463463374607431768211456', 'c-yellow']],
+    null,
+    [['localhost:~# ', 'c-green'], ['', '']],
+  ];
+
+  // Build a flat stream of typed characters
+  const stream = [];
+  for (const line of lines) {
+    if (line === null) {
+      stream.push({ type: 'newline', delay: 20 });
+      continue;
+    }
+    for (const [text, cls] of line) {
+      for (const ch of text) {
+        stream.push({ type: 'char', char: ch, cls, delay: 1 + Math.random() * 3 });
+      }
+    }
+    stream.push({ type: 'newline', delay: 15 });
+  }
+
+  let idx = 0;
+  let html = '';
+  let currentClass = null;
+
+  function flush() {
+    if (currentClass) {
+      html += '</span>';
+      currentClass = null;
+    }
+  }
+
+  function esc(ch) {
+    if (ch === '<') return '&lt;';
+    if (ch === '>') return '&gt;';
+    if (ch === '&') return '&amp;';
+    return ch;
+  }
+
+  function step() {
+    if (idx >= stream.length) {
+      flush();
+      term.innerHTML = html + '<span class="cursor"></span>';
+      mipsEl.textContent = '● 325 MIPS';
+      return;
+    }
+
+    const item = stream[idx++];
+
+    if (item.type === 'newline') {
+      flush();
+      html += '\n';
+      term.innerHTML = html;
+      term.scrollTop = term.scrollHeight;
+      setTimeout(step, item.delay);
+      return;
+    }
+
+    // char
+    if (item.cls !== currentClass) {
+      flush();
+      if (item.cls) {
+        html += '<span class="' + item.cls + '">';
+        currentClass = item.cls;
+      }
+    }
+    html += esc(item.char);
+    term.innerHTML = html;
+    term.scrollTop = term.scrollHeight;
+    setTimeout(step, item.delay);
+  }
+
+  setTimeout(step, 200);
+})();
+</script>
 </body>
 </html>
