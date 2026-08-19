@@ -77,12 +77,6 @@ its compiled blocks for free rather than re-translating them.
 
 ## Benchmarks
 
-All numbers here are **relative, within-run A/B ratios** — the only numbers that
-mean anything for a JIT. Absolute MIPS varies wildly with host, browser build,
-CPU frequency, and thermals; a cross-session absolute comparison is noise, so
-none are quoted. How to read the table: `~2.3×` means *the same workload, same
-session, same machine, with only that lever changed*.
-
 - A pure Python data-parsing loop stays ~**81 % inside compiled block bodies**;
   the rest is translation, run-loop, and device polling time, not guest work.
 - The JIT's other headline wins are all in the ledger table below — every one
@@ -102,19 +96,6 @@ the ones that failed. Highlights of what actually moved the needle:
 | Selective `fence.i` flush (drop spurious cache flushes) | cold-interpreter work **51M → 15M** instructions |
 | ASID-keyed generations (restore, don't invalidate, on `satp`) | **+14 %** on pipe-heavy workloads |
 | `chain_max` (blocks per host entry) | **1.2–1.5×** across workloads |
-
-And, just as valuable, the levers measured **null** so they don't get retried:
-macro-op fusion, register-residency-into-locals, TLB-probe hoisting, memset
-SIMD, static tail-call linking, per-block inline caches — each was correct but
-gave no resolvable win, because the hot code is already TurboFan-optimized
-machine code. If you plan to work on the JIT, **read the ledger first.**
-
-Methodology: **relative within-run A/B ratios only.** This is a noisy laptop
-and the whole point is tracking how a lever changes *the same run* — absolute
-MIPS across sessions is never reported or compared. If you see an absolute-MIPS
-claim anywhere, treat it as stale: the JIT's value is measured in multiples,
-not magnitudes. The benchmark harnesses (`mips.js`, `pybench/`, `jit-vm-test.js`,
-and the disassembler `rvdis`) are included.
 
 ---
 
