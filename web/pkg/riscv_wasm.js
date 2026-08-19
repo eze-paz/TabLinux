@@ -925,3 +925,7 @@ async function __wbg_init(module_or_path) {
 }
 
 export { initSync, __wbg_init as default };
+// Appended by the publish script. The JIT links generated blocks against the
+// host's own memory and function table, and those are not otherwise reachable
+// from outside this module.
+export { wasm as __wasm };
