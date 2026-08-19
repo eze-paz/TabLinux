@@ -864,7 +864,7 @@ function setupCommands(restore = false) {
             ? (restore ? "stty -F /dev/ttyS0 echo 2>/dev/null; dmesg -n 4 2>/dev/null" : "true")
             : (restore ? "true" : "stty -F /dev/ttyS0 -echo 2>/dev/null; dmesg -n 1 2>/dev/null"),
         "mkdir -p /mnt/disk; mount -t ext4 /dev/vda /mnt/disk 2>/dev/null" +
-            " && echo '[disk] persistent /mnt/disk ready'",
+            (verbose ? " && echo '[disk] persistent /mnt/disk ready'" : ""),
         // The 9p shared folder. On a cold boot the modules are insmod'd from the
         // persistent disk (dependency order: netfs, protocol, virtio transport,
         // filesystem); on a restore they are already loaded, so only the mount runs.
@@ -875,9 +875,9 @@ function setupCommands(restore = false) {
                   "; insmod /mnt/disk/mod/9pnet.ko 2>/dev/null" +
                   "; insmod /mnt/disk/mod/9pnet_virtio.ko 2>/dev/null" +
                   "; insmod /mnt/disk/mod/9p.ko 2>/dev/null" +
-                  "; echo '[9p] modules loaded'") +
+                  (verbose ? "; echo '[9p] modules loaded'" : "")) +
             `; mount -t 9p -o trans=virtio,version=9p2000.L,msize=131072 ${P9_TAG} /files 2>/dev/null` +
-            " && echo '[9p] shared folder at /files' || echo '[9p] not mounted'",
+            (verbose ? " && echo '[9p] shared folder at /files' || echo '[9p] not mounted'" : ""),
         // The overlay layer can end up MASKING the base system, and when it does
         // it takes away the commands needed to repair it: an interrupted package
         // operation deletes a file in the upper layer (leaving a whiteout, a 0:0
@@ -911,7 +911,7 @@ function setupCommands(restore = false) {
             "   /tmp/bb rm -rf /mnt/disk/ovl 2>/dev/null || rm -rf /mnt/disk/ovl 2>/dev/null;" +
             "   echo '[persist] overlay hid the base system: dropped, reset for next boot';" +
             " else" +
-            "   echo \"[persist] overlay on $(grep -c ' overlay ' /proc/mounts) of 6 dirs\";" +
+            (verbose ? "   echo \"[persist] overlay on $(grep -c ' overlay ' /proc/mounts) of 6 dirs\";" : "") +
             " fi",
         // eth0 up + address + route AND resolv.conf are all baked into the
         // snapshot now; a restore just reports it. A cold boot still does it.
@@ -921,7 +921,7 @@ function setupCommands(restore = false) {
               "; ip addr add 192.168.86.100/24 dev eth0 2>/dev/null" +
               "; ip route add default via 192.168.86.1 2>/dev/null" +
               "; echo nameserver 192.168.86.1 > /etc/resolv.conf; ") +
-            "echo '[net] eth0 192.168.86.100/24 via 192.168.86.1 (TCP only)'",
+            (verbose ? "echo '[net] eth0 192.168.86.100/24 via 192.168.86.1 (TCP only)'" : "true"),
         // apk needs a database before it will do anything, and apk-tools 3
         // has no --initdb: without these files it fails with "Unable to
         // lock database" and then "Unable to read database", which read
@@ -947,7 +947,7 @@ function setupCommands(restore = false) {
             "; [ -s /etc/apk/repositories ] ||" +
             "   echo http://dl-cdn.alpinelinux.org/alpine/v3.22/main" +
             "     > /etc/apk/repositories" +
-            "; echo \"[apk] ready ($(wc -l < /etc/apk/world) in world)\"",
+            (verbose ? "; echo \"[apk] ready ($(wc -l < /etc/apk/world) in world)\"" : ""),
         // Last, because it replaces this shell. The initramfs rescue shell
         // is started without a controlling terminal — `tty` reports "not a
         // tty" and the boot log says "job control turned off" — so the tty
@@ -983,11 +983,11 @@ function setupCommands(restore = false) {
         (verbose ? "" : "/tmp/bb stty -F /dev/ttyS0 echo 2>/dev/null || stty -F /dev/ttyS0 echo 2>/dev/null; dmesg -n 4 2>/dev/null; ") +
             (winsize
                 ? `stty -F /dev/ttyS0 rows ${winsize.rows} cols ${winsize.cols} 2>/dev/null` +
-                  `; echo '[tty] size ${winsize.cols}x${winsize.rows}'`
+                  (verbose ? `; echo '[tty] size ${winsize.cols}x${winsize.rows}'` : "")
                 : "true"),
         // (the page is told below which size this applied, so it does not
         //  type the same command again at the prompt)
-        "echo '[tty] Ctrl-C, Ctrl-Z and job control enabled'" +
+        (verbose ? "echo '[tty] Ctrl-C, Ctrl-Z and job control enabled'" : "true") +
             "; setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'",
     ].join("\n") + "\n";
     return boot;
