@@ -36,6 +36,8 @@ web/pkg/
 kernels/boot/initramfs-nosig
 kernels/shell.snap*
 kernels/disk-ext4.img*
+!kernels/shell.snap.gz
+!kernels/disk-ext4.img.gz
 kernels/_diskseed/
 kernels/_diskseed/
 msg.txt
