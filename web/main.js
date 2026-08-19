@@ -273,10 +273,17 @@ function fitIfMoved() {
 const net = new RiscvNetAdapter(frame => post({ rx: frame }, [frame.buffer]));
 
 // Egress. Without a relay fake_network answers ARP/DHCP/ICMP/DNS but resets
-// every TCP connection, so `apk` cannot work. Always this origin's /wisp — the
-// only arrangement where the relay's SSO gate can see the session cookie.
+// every TCP connection, so `apk` cannot work. Default: this origin's /wisp —
+// the only arrangement where the relay's SSO gate can see the session cookie.
+// `?wisp=wss://host/path` overrides it with an explicit relay (e.g. a public
+// one on GitHub Pages, where no /wisp endpoint exists); `?wisp=1` forces the
+// same-origin /wisp.
 {
-    const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/wisp`;
+    const params = new URLSearchParams(location.search);
+    const wispParam = params.get("wisp");
+    const url = (wispParam && wispParam !== "1")
+        ? wispParam
+        : `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/wisp`;
     const wisp = new WispEgress(url, {
         onStatus: s => {
             netinfo.textContent = s.replace(/^wisp: /, "");

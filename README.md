@@ -10,6 +10,11 @@ Most in-browser RISC-V emulators are interpreters. This one **compiles hot guest
 code to WebAssembly at runtime and tail-calls between the compiled blocks**,
 which is where the interesting engineering lives.
 
+> **Try it live:** <https://eze-paz.github.io/TabLinux/> — boots Alpine in your
+> browser tab. No install, no server. (Networking needs a WISP relay; a free
+> public one can be enabled with `?wisp=wss://wisp.mercurywork.shop/`, or run
+> your own — see [Networking](#networking-wisp).)
+
 ---
 
 ## Architecture
@@ -69,13 +74,16 @@ its compiled blocks for free rather than re-translating them.
 
 ## Benchmarks
 
-Measured on a laptop under Node/V8 (the same wasm engine as the browser). These
-are representative steady-state figures — absolute MIPS varies by host and
-browser, so treat them as orders of magnitude, not guarantees.
+All numbers here are **relative, within-run A/B ratios** — the only numbers that
+mean anything for a JIT. Absolute MIPS varies wildly with host, browser build,
+CPU frequency, and thermals; a cross-session absolute comparison is noise, so
+none are quoted. How to read the table: `~2.3×` means *the same workload, same
+session, same machine, with only that lever changed*.
 
-- **CPython workloads run at ~150–180 MIPS** under the JIT. A pure Python
-  data-parsing loop stays ~**81 % inside compiled block bodies** (the rest is
-  translation, the run loop, and device polling).
+- A pure Python data-parsing loop stays ~**81 % inside compiled block bodies**;
+  the rest is translation, run-loop, and device polling time, not guest work.
+- The JIT's other headline wins are all in the ledger table below — every one
+  is a same-session A/B ratio, which is what makes it trustworthy.
 - The VM boots Alpine to a shell and runs `python3`, `apk`, `busybox`, etc.
   unmodified.
 
@@ -98,10 +106,12 @@ SIMD, static tail-call linking, per-block inline caches — each was correct but
 gave no resolvable win, because the hot code is already TurboFan-optimized
 machine code. If you plan to work on the JIT, **read the ledger first.**
 
-Methodology note: this is a noisy laptop, so only **within-run A/B ratios** are
-trustworthy — never compare absolute MIPS across sessions. The benchmark
-harnesses (`mips.js`, `pybench/`, `jit-vm-test.js`, and the disassembler
-`rvdis`) are included.
+Methodology: **relative within-run A/B ratios only.** This is a noisy laptop
+and the whole point is tracking how a lever changes *the same run* — absolute
+MIPS across sessions is never reported or compared. If you see an absolute-MIPS
+claim anywhere, treat it as stale: the JIT's value is measured in multiples,
+not magnitudes. The benchmark harnesses (`mips.js`, `pybench/`, `jit-vm-test.js`,
+and the disassembler `rvdis`) are included.
 
 ---
 
